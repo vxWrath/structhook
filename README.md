@@ -57,6 +57,7 @@ b'{"name":"ALICE","email":"alice@example.com","role":"user","display_name":"Alic
 - **Field exclusion** — `field(exclude=True)` keeps secrets out of `encode()` / `dump()`.
 - **Controlled output** — `dump()` supports `include` filtering, `fire_hooks` toggle, JSON and Python modes.
 - **Dict-like access** — `model["key"]` / `model["key"] = value`.
+- **DotDict** — `dict` subclass with dot-style attribute access for working with arbitrary JSON without defining a schema.
 - **Fast path** — models without hooks, computed, or excluded fields use raw msgspec encode/decode with zero overhead.
 
 ## Install
@@ -110,6 +111,43 @@ Signature: `(cls, value) -> new_value`
 ### `@computed_field`
 
 Read-only property injected into `encode()` / `dump()` output but not stored in the underlying struct.
+
+### `DotDict`
+
+A `dict` subclass with attribute-style access. Nested dicts and lists of dicts are recursively wrapped, so you can chain dots arbitrarily deep. Use it for ad-hoc JSON when you don't want to define a model.
+
+```pycon
+>>> from structhook import DotDict
+
+>>> d = DotDict.decode(b'{"user":{"name":"Alice","scores":[90,95]}}')
+>>> d.user.name
+'Alice'
+>>> d.user.scores[0]
+90
+
+>>> d.new_field = {"nested": True}
+>>> d.new_field.nested
+True
+```
+
+`DotDict` also works as a field type in `HookModel` subclasses — the encode/decode hooks handle conversion to and from plain dicts automatically.
+
+```pycon
+>>> from structhook import HookModel, DotDict
+
+>>> class Config(HookModel):
+...     name: str
+...     metadata: DotDict  # arbitrary JSON, no schema needed
+...
+>>> cfg = Config.decode(b'{"name":"app","metadata":{"db":{"host":"localhost"},"cache":{"ttl":60}}}')
+>>> cfg.metadata.db.host
+'localhost'
+>>> cfg.metadata.cache.ttl
+60
+
+>>> cfg.encode()
+b'{"name":"app","metadata":{"db":{"host":"localhost"},"cache":{"ttl":60}}}'
+```
 
 ## License
 

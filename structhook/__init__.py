@@ -1,5 +1,6 @@
 """structhook - Extra field info, computed fields, and hooks for `msgspec.Struct`."""
 
+from structhook.dotdict import DotDict
 from structhook.model import (
     DictLike,
     Field,
@@ -14,6 +15,7 @@ from structhook.model import (
 
 __all__ = [
     "DictLike",
+    "DotDict",
     "Field",
     "HookModel",
     "Stage",

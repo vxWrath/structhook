@@ -18,11 +18,21 @@ that adds:
 from collections.abc import Buffer, Callable, Sequence
 from enum import StrEnum
 from functools import cache
-from typing import Any, ClassVar, Literal, Protocol, Self, dataclass_transform
+from typing import (
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    Self,
+    dataclass_transform,
+    get_origin,
+)
 
 import msgspec
 from msgspec import NODEFAULT, Struct, StructMeta, json, structs
 from msgspec._core import Factory as _Factory
+
+from structhook.dotdict import DotDict
 
 __all__ = [
     "HookModel",
@@ -39,11 +49,16 @@ __all__ = [
 
 def enc_hook(obj: Any) -> Any:
     """Called when msgspec encounters a type it can't encode."""
+    if isinstance(obj, DotDict):
+        return dict(obj)
     raise TypeError(f"Cannot encode object of type {type(obj)}")
 
 
 def dec_hook(typ: type[Any], obj: Any) -> Any:
     """Called when decoding into a type msgspec doesn't natively support."""
+    origin = get_origin(typ) or typ
+    if origin is DotDict or (isinstance(origin, typ.__class__) and issubclass(origin, DotDict)):
+        return DotDict(obj)
     raise TypeError(f"Cannot decode into type {typ}")
 
 
