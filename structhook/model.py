@@ -150,7 +150,7 @@ def field(
 ) -> Any:
     """Declare a model field with extra metadata.
 
-    Returns a :class:`Field` instance that the :class:`ModelMeta` metaclass
+    Returns a :class:`Field` instance that the :class:`HookStructMeta` metaclass
     converts into a native :func:`msgspec.field` at class-creation time.
     """
     if default is not NODEFAULT and default_factory is not NODEFAULT:
@@ -277,7 +277,7 @@ def computed_field(func: Callable[..., Any]) -> property:
 
 
 @dataclass_transform(field_descriptors=(field,), kw_only_default=True)  # type: ignore
-class ModelMeta(StructMeta):
+class HookStructMeta(StructMeta):
     """Metaclass that wires up hooks, computed fields, and encode/decode logic."""
 
     def __new__(
@@ -492,7 +492,7 @@ class ModelMeta(StructMeta):
 # ---------------------------------------------------------------------------
 
 
-class HookStruct(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
+class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
     """Base class for msgspec-backed models with hooks, computed fields, and
     field exclusion.
 

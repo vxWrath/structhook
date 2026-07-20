@@ -3,9 +3,9 @@
 Extra field info, computed fields, and hooks for `msgspec.Struct`.
 
 ```python
-from structhook import BaseModel, field, serialize, deserialize, validate, computed_field
+from structhook import HookStruct, field, serialize, deserialize, validate, computed_field
 
-class User(BaseModel):
+class User(HookStruct):
     name: str
     email: str
     role: str = "user"
@@ -70,7 +70,7 @@ Requires Python ≥ 3.14 and msgspec ≥ 0.21.1.
 
 ## API
 
-### `BaseModel`
+### `HookStruct`
 
 Subclass of `msgspec.Struct` with `kw_only=True`, `dict=True`.
 
