@@ -7,6 +7,11 @@ that adds:
   ``extra`` options.
 * **Lifecycle hooks** - :func:`serialize`, :func:`deserialize`, and
   :func:`validate` decorators for per-field transform pipelines.
+  These fire on **every** encode / decode of the field.
+* **msgspec codec hooks** - :meth:`HookStruct.msgspec_enc_hook` and
+  :meth:`HookStruct.msgspec_dec_hook` static methods that fire **only** when
+  msgspec encounters a type it doesn't natively handle.  Override these to
+  teach msgspec about custom types (e.g. ``UUID``, ``Money``, ``DotDict``).
 * **Computed fields** - :func:`computed_field` for read-only derived values
   that appear in serialized output.
 * **Dict-like access** - ``model["key"]`` / ``model["key"] = value`` mapping
@@ -17,7 +22,6 @@ that adds:
 
 from collections.abc import Buffer, Callable, Sequence
 from enum import StrEnum
-from functools import cache
 from typing import (
     Any,
     ClassVar,
@@ -45,31 +49,6 @@ __all__ = [
     "serialize",
     "validate",
 ]
-
-
-def enc_hook(obj: Any) -> Any:
-    """Called when msgspec encounters a type it can't encode."""
-    if isinstance(obj, DotDict):
-        return dict(obj)
-    raise TypeError(f"Cannot encode object of type {type(obj)}")
-
-
-def dec_hook(typ: type[Any], obj: Any) -> Any:
-    """Called when decoding into a type msgspec doesn't natively support."""
-    origin = get_origin(typ) or typ
-    if origin is DotDict or (isinstance(origin, typ.__class__) and issubclass(origin, DotDict)):
-        return DotDict(obj)
-    raise TypeError(f"Cannot decode into type {typ}")
-
-
-ENCODER = json.Encoder(enc_hook=enc_hook)
-
-
-@cache
-def get_decoder[T](type: type[T]) -> json.Decoder[T]:
-    """Return a cached Decoder for the given type."""
-    return json.Decoder(type, dec_hook=dec_hook)
-
 
 # ---------------------------------------------------------------------------
 # Dict-like protocol
@@ -390,16 +369,25 @@ class HookStructMeta(StructMeta):
         )
         cls.__has_decode_features__ = bool(cls.__deserialize_hooks__ or cls.__validate_hooks__)  # type: ignore
 
+        # --- build per-class encoder / decoders -------------------------------
+
+        # Each class gets its own encoder and decoders so that subclasses can
+        # override msgspec_enc_hook / msgspec_dec_hook.
+        _encoder = json.Encoder(enc_hook=cls.msgspec_enc_hook)  # type: ignore
+        _dict_decoder = json.Decoder(dict, dec_hook=cls.msgspec_dec_hook)  # type: ignore
+        _typed_decoder = json.Decoder(cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
+        cls.__json_encoder__ = _encoder  # type: ignore
+
         # --- build _to_builtins / _encode -----------------------------------
 
         if not cls.__has_encode_features__:  # type: ignore
 
             def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
-                return msgspec.to_builtins(self, enc_hook=enc_hook)
+                return msgspec.to_builtins(self, enc_hook=type(self).msgspec_enc_hook)
 
             def _encode(self: HookStruct) -> bytes:
                 # Fast path: encode the Struct directly - no intermediate dict.
-                return ENCODER.encode(self)
+                return _encoder.encode(self)
 
         else:
             _encode_excluded_fields = cls.__excluded_fields__  # type: ignore
@@ -407,7 +395,9 @@ class HookStructMeta(StructMeta):
             _encode_serialize_hooks = cls.__serialize_hooks__  # type: ignore
 
             def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
-                data: dict[str, Any] = msgspec.to_builtins(self, enc_hook=enc_hook)
+                data: dict[str, Any] = msgspec.to_builtins(
+                    self, enc_hook=type(self).msgspec_enc_hook
+                )
 
                 for field in _encode_excluded_fields:
                     data.pop(field, None)
@@ -424,7 +414,7 @@ class HookStructMeta(StructMeta):
                 return data
 
             def _encode(self: HookStruct) -> bytes:
-                return ENCODER.encode(_to_builtins(self))
+                return _encoder.encode(_to_builtins(self))
 
         # --- build _shared_convert ------------------------------------------
 
@@ -440,28 +430,27 @@ class HookStructMeta(StructMeta):
         # --- build _decode / _convert ---------------------------------------
 
         if not cls.__has_decode_features__:  # type: ignore
-            decoder = get_decoder(cls)
 
             def _decode(raw: bytes) -> HookStruct:
-                return decoder.decode(raw)
+                return _typed_decoder.decode(raw)
 
             def _convert(data: DictLike) -> HookStruct:
                 # Fast path: no hooks - convert directly.
-                return msgspec.convert(data, cls, dec_hook=dec_hook)
+                return msgspec.convert(data, cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
 
         else:
             _decode_deserialize_hooks = cls.__deserialize_hooks__  # type: ignore
             _decode_validate_hooks = cls.__validate_hooks__  # type: ignore
 
             def _decode(raw: bytes) -> HookStruct:
-                data: dict[str, Any] = get_decoder(dict).decode(raw)
+                data: dict[str, Any] = _dict_decoder.decode(raw)
 
                 for field, funcs in _decode_deserialize_hooks.items():
                     if field in data:
                         for func in funcs:
                             data[field] = func(cls, data[field])
 
-                obj = msgspec.convert(data, cls, dec_hook=dec_hook)
+                obj = msgspec.convert(data, cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
 
                 for field, funcs in _decode_validate_hooks.items():
                     for func in funcs:
@@ -477,7 +466,9 @@ class HookStructMeta(StructMeta):
                         for func in funcs:
                             data_dict[field] = func(cls, data_dict[field])
 
-                return _shared_convert(msgspec.convert(data_dict, cls, dec_hook=dec_hook))
+                return _shared_convert(
+                    msgspec.convert(data_dict, cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
+                )
 
         cls.__to_builtins_func__ = _to_builtins  # type: ignore
         cls.__encode_func__ = _encode  # type: ignore
@@ -498,6 +489,27 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
 
     Subclass this instead of :class:`msgspec.Struct` to get hooks, computed
     fields, and field-exclusion support.
+
+    **Two kinds of hooks**
+
+    ``structhook`` provides two distinct hook systems that serve different
+    purposes:
+
+    .. list-table::
+       :header-rows: 1
+
+       * - Hook
+         - Scope
+         - When it fires
+         - Override via
+       * - :func:`serialize` / :func:`deserialize` / :func:`validate`
+         - A specific **field**
+         - **Every** encode / decode of that field
+         - Decorator on a method
+       * - :meth:`msgspec_enc_hook` / :meth:`msgspec_dec_hook`
+         - A **type** msgspec doesn't natively handle
+         - **Only** when that type is encountered
+         - ``@staticmethod`` override on a subclass
 
     .. warning::
         ``frozen=True`` is incompatible with :func:`validate` hooks (they
@@ -524,6 +536,104 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
     __encode_func__: ClassVar[Callable[[Self], bytes]]
     __decode_func__: ClassVar[Callable[[Buffer | str], Self]]
     __convert_func__: ClassVar[Callable[[DictLike], Self]]
+    __json_encoder__: ClassVar[json.Encoder]
+
+    # --------------- msgspec encode / decode hooks -----------------------
+
+    @staticmethod
+    def msgspec_enc_hook(obj: Any) -> Any:
+        """Encode hook called by msgspec **only** for types it cannot natively encode.
+
+        .. important::
+
+           This hook fires **only** when msgspec encounters a type it doesn't
+           know how to serialize (e.g. ``DotDict``, ``UUID``, a custom class).
+           It does **not** fire for ``str``, ``int``, ``list``, or any other
+           type msgspec handles natively.
+
+           If you want a hook that fires on **every** encode of a specific
+           field, use :func:`serialize` instead.
+
+        The hook receives a single object and must return a JSON-serializable
+        value (``dict``, ``list``, ``str``, ``int``, ``float``, ``bool``, or
+        ``None``).  It is passed as the ``enc_hook`` parameter to
+        :class:`msgspec.json.Encoder` and :func:`msgspec.to_builtins`.
+
+        **Override this in subclasses** to add custom JSON encoding for your
+        types.  Always call the parent implementation as a fallback so that
+        :class:`DotDict` encoding (and any other base-type handling) continues
+        to work::
+
+            from uuid import UUID
+
+            class MyModel(HookStruct):
+                id: UUID
+                name: str
+
+                @staticmethod
+                def msgspec_enc_hook(obj):
+                    if isinstance(obj, UUID):
+                        return str(obj)
+                    # Fall back to default handling (DotDict, etc.)
+                    return HookStruct.msgspec_enc_hook(obj)
+
+        .. warning::
+
+            This hook fires for **every** object msgspec cannot natively
+            encode.  Keep it fast and side-effect-free — do not mutate the
+            object or its attributes.
+        """
+        if isinstance(obj, DotDict):
+            return dict(obj)
+        raise TypeError(f"Cannot encode object of type {type(obj)!r}")
+
+    @staticmethod
+    def msgspec_dec_hook(typ: type[Any], obj: Any) -> Any:
+        """Decode hook called by msgspec **only** for types it cannot natively decode.
+
+        .. important::
+
+           This hook fires **only** when msgspec encounters a type it doesn't
+           know how to deserialize (e.g. ``DotDict``, ``UUID``, a custom class).
+           It does **not** fire for ``str``, ``int``, ``list``, or any other
+           type msgspec handles natively.
+
+           If you want a hook that fires on **every** decode of a specific
+           field, use :func:`deserialize` instead.
+
+        The hook receives the **target type** and the raw JSON value, and must
+        return an instance of the target type.  It is passed as the
+        ``dec_hook`` parameter to :class:`msgspec.json.Decoder` and
+        :func:`msgspec.convert`.
+
+        **Override this in subclasses** to add custom JSON decoding for your
+        types.  Always call the parent implementation as a fallback so that
+        :class:`DotDict` decoding (and any other base-type handling) continues
+        to work::
+
+            from uuid import UUID
+
+            class MyModel(HookStruct):
+                id: UUID
+                name: str
+
+                @staticmethod
+                def msgspec_dec_hook(typ, obj):
+                    if typ is UUID:
+                        return UUID(obj)
+                    # Fall back to default handling (DotDict, etc.)
+                    return HookStruct.msgspec_dec_hook(typ, obj)
+
+        .. warning::
+
+            This hook fires for **every** type msgspec cannot natively
+            decode.  Keep it fast and side-effect-free — do not mutate
+            the input object.
+        """
+        origin = get_origin(typ) or typ
+        if origin is DotDict or (isinstance(origin, type) and issubclass(origin, DotDict)):
+            return DotDict(obj)
+        raise TypeError(f"Cannot decode into type {typ!r}")
 
     # ---------------------------- mapping API -----------------------------
 
@@ -568,7 +678,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
         data = self.__class__.__to_builtins_func__(self, fire_hooks=fire_hooks)
 
         if mode == "json":
-            data = msgspec.json.decode(ENCODER.encode(data))
+            data = msgspec.json.decode(type(self).__json_encoder__.encode(data))
 
         if include is not None:
             return {field: data[field] for field in include if field in data}

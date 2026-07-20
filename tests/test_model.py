@@ -6,6 +6,7 @@ import pytest
 from msgspec import NODEFAULT
 
 from structhook import (
+    DotDict,
     Field,
     HookStruct,
     Stage,
@@ -560,3 +561,199 @@ class TestEdgeCases:
             name: str = field(extra={"doc": "The name"})
 
         assert WithExtra.__fields__["name"].extra == {"doc": "The name"}
+
+
+# ---------------------------------------------------------------------------
+# msgspec_enc_hook / msgspec_dec_hook overrides
+# ---------------------------------------------------------------------------
+
+
+class CustomType:
+    """A simple wrapper type used in hook override tests."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, CustomType):
+            return self.value == other.value
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"CustomType({self.value!r})"
+
+
+class TestMsgspecEncHookOverride:
+    """Test overriding ``msgspec_enc_hook`` on a HookStruct subclass."""
+
+    def test_custom_type_encoded(self) -> None:
+        class WithCustomEnc(HookStruct):
+            name: str
+            data: CustomType = field(default_factory=lambda: CustomType("default"))
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                if isinstance(obj, CustomType):
+                    return {"__custom__": obj.value}
+                return HookStruct.msgspec_enc_hook(obj)
+
+        m = WithCustomEnc(name="test", data=CustomType("hello"))
+        encoded = m.encode()
+        assert b'"__custom__"' in encoded
+        assert b'"hello"' in encoded
+
+    def test_fallback_to_parent(self) -> None:
+        """Child delegates to Parent's enc_hook for types it doesn't handle."""
+
+        class Parent(HookStruct):
+            value: str = ""
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                if isinstance(obj, CustomType):
+                    return {"__custom__": obj.value}
+                return HookStruct.msgspec_enc_hook(obj)
+
+        class Child(Parent):
+            data: CustomType = field(default_factory=lambda: CustomType("child_val"))
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                # Child doesn't handle CustomType — delegates to Parent
+                return Parent.msgspec_enc_hook(obj)
+
+        m = Child(data=CustomType("hello"))
+        encoded = m.encode()
+        assert b'"__custom__"' in encoded  # Parent's hook handled it
+        assert b'"hello"' in encoded
+
+    def test_dump_json_mode_uses_class_encoder(self) -> None:
+        class WithJsonRoundtrip(HookStruct):
+            value: str
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                if isinstance(obj, CustomType):
+                    return obj.value
+                return HookStruct.msgspec_enc_hook(obj)
+
+        m = WithJsonRoundtrip(value="hello")
+        data = m.dump(mode="json")
+        assert data == {"value": "hello"}
+
+
+class TestMsgspecDecHookOverride:
+    """Test overriding ``msgspec_dec_hook`` on a HookStruct subclass."""
+
+    def test_custom_type_decoded(self) -> None:
+        class WithCustomDec(HookStruct):
+            name: str
+            data: CustomType = field(default_factory=lambda: CustomType("default"))
+
+            @staticmethod
+            def msgspec_dec_hook(typ: type[Any], obj: Any) -> Any:
+                if typ is CustomType:
+                    return CustomType(obj["__custom__"])
+                return HookStruct.msgspec_dec_hook(typ, obj)
+
+        m = WithCustomDec.decode(b'{"name":"test","data":{"__custom__":"hello"}}')
+        assert m.name == "test"
+        assert isinstance(m.data, CustomType)
+        assert m.data.value == "hello"
+
+    def test_convert_applies(self) -> None:
+        class WithCustomDec(HookStruct):
+            name: str
+            data: CustomType = field(default_factory=lambda: CustomType("default"))
+
+            @staticmethod
+            def msgspec_dec_hook(typ: type[Any], obj: Any) -> Any:
+                if typ is CustomType:
+                    return CustomType(obj["__custom__"])
+                return HookStruct.msgspec_dec_hook(typ, obj)
+
+        m = WithCustomDec.convert({"name": "test", "data": {"__custom__": "world"}})
+        assert isinstance(m.data, CustomType)
+        assert m.data.value == "world"
+
+    def test_fallback_to_parent(self) -> None:
+        class Parent(HookStruct):
+            name: str
+
+            @staticmethod
+            def msgspec_dec_hook(typ: type[Any], obj: Any) -> Any:
+                return HookStruct.msgspec_dec_hook(typ, obj)
+
+        class Child(Parent):
+            # No override — inherits Parent's hook.  Should still decode
+            # DotDict fields correctly via the base implementation.
+            config: DotDict = field(default_factory=DotDict)
+
+        m = Child.decode(b'{"name":"x","config":{"key":"val"}}')
+        assert isinstance(m.config, DotDict)
+        assert m.config.key == "val"
+
+
+class TestMsgspecHooksRoundtrip:
+    """Test both hooks together for full encode-decode roundtrip."""
+
+    def test_full_roundtrip(self) -> None:
+        class WithBothHooks(HookStruct):
+            name: str
+            data: CustomType = field(default_factory=lambda: CustomType("default"))
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                if isinstance(obj, CustomType):
+                    return {"__custom__": obj.value}
+                return HookStruct.msgspec_enc_hook(obj)
+
+            @staticmethod
+            def msgspec_dec_hook(typ: type[Any], obj: Any) -> Any:
+                if typ is CustomType:
+                    return CustomType(obj["__custom__"])
+                return HookStruct.msgspec_dec_hook(typ, obj)
+
+        original = WithBothHooks(name="roundtrip", data=CustomType("test_value"))
+        decoded = WithBothHooks.decode(original.encode())
+        assert decoded == original  # uses CustomType.__eq__
+
+    def test_subclasses_dont_interfere(self) -> None:
+        """Different subclasses with different hooks should not conflict."""
+
+        class ModelA(HookStruct):
+            value: str = ""
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                if isinstance(obj, CustomType):
+                    return "from_a"
+                return HookStruct.msgspec_enc_hook(obj)
+
+        class ModelB(HookStruct):
+            value: str = ""
+
+            @staticmethod
+            def msgspec_enc_hook(obj: Any) -> Any:
+                if isinstance(obj, CustomType):
+                    return "from_b"
+                return HookStruct.msgspec_enc_hook(obj)
+
+        a = ModelA(value="x")
+        b = ModelB(value="x")
+        assert a.encode() == b'{"value":"x"}'  # ModelA's encoder
+        assert b.encode() == b'{"value":"x"}'  # ModelB's encoder
+
+    def test_default_hook_raises_on_unknown_type(self) -> None:
+        """The base HookStruct hook should raise TypeError on unknown types."""
+
+        class DefaultModel(HookStruct):
+            name: str
+
+        # Encode should work normally
+        m = DefaultModel(name="test")
+        assert m.encode() == b'{"name":"test"}'
+
+        # But encoding a CustomType directly (without hook override) should raise
+        with pytest.raises(TypeError, match="Cannot encode"):
+            HookStruct.msgspec_enc_hook(CustomType("x"))
