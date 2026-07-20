@@ -305,13 +305,13 @@ class ModelMeta(StructMeta):
         for base in bases:
             if getattr(base, "__kw_only__", False):
                 kwargs.setdefault("kw_only", True)
-            if getattr(base, "__structhook_dict__", False):
+            if getattr(base, "__has_dict__", False):
                 kwargs.setdefault("dict", True)
 
         cls = super().__new__(mcls, name, bases, namespace, **kwargs)
 
         cls.__kw_only__ = kwargs.get("kw_only", False)  # type: ignore
-        cls.__structhook_dict__ = kwargs.get("dict", False)  # type: ignore
+        cls.__has_dict__ = kwargs.get("dict", False)  # type: ignore
 
         # After super().__new__, __struct_config__ is available - use it as
         # the authoritative source (handles inheritance correctly).
