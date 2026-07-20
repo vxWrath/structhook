@@ -1,6 +1,6 @@
 """Core model wrapper for msgspec.
 
-Provides :class:`BaseModel`, a drop-in replacement for :class:`msgspec.Struct`
+Provides :class:`HookModel`, a drop-in replacement for :class:`msgspec.Struct`
 that adds:
 
 * **Field metadata** - :func:`field` / :class:`Field` with ``exclude`` and
@@ -11,7 +11,7 @@ that adds:
   that appear in serialized output.
 * **Dict-like access** - ``model["key"]`` / ``model["key"] = value`` mapping
   API.
-* **Controlled output** - :meth:`BaseModel.dump` with ``include`` filtering,
+* **Controlled output** - :meth:`HookModel.dump` with ``include`` filtering,
   ``fire_hooks`` toggle, and JSON / Python mode selection.
 """
 
@@ -33,7 +33,7 @@ from msgspec import NODEFAULT, Struct, StructMeta, json, structs
 from msgspec._core import Factory as _Factory  # type: ignore
 
 __all__ = [
-    "BaseModel",
+    "HookModel",
     "DictLike",
     "Field",
     "Stage",
@@ -72,7 +72,7 @@ def get_decoder[T](type: type[T]) -> json.Decoder[T]:
 class DictLike(Protocol):
     """A dict-like object: has string keys and supports ``__getitem__``.
 
-    This is the minimal interface needed by :meth:`BaseModel.convert` - any
+    This is the minimal interface needed by :meth:`HookModel.convert` - any
     type that can be passed to ``dict()`` and indexed by string keys works.
     """
 
@@ -253,7 +253,7 @@ def computed_field(func: Callable[..., Any]) -> property:
 
     Example::
 
-        class User(BaseModel):
+        class User(HookModel):
             first: str
             last: str
 
@@ -307,7 +307,7 @@ class ModelMeta(StructMeta):
             ):
                 computed_fields.append(key)
 
-        # Propagate kw_only and dict from parent BaseModel subclasses.
+        # Propagate kw_only and dict from parent HookModel subclasses.
         # msgspec does not expose these in __struct_config__, so we track
         # them ourselves via __kw_only__ / __dict__ sentinel attributes.
         for base in bases:
@@ -389,10 +389,10 @@ class ModelMeta(StructMeta):
 
         if not cls.__has_encode_features__:  # type: ignore
 
-            def _to_builtins(self: BaseModel, fire_hooks: bool = True) -> dict[str, Any]:
+            def _to_builtins(self: HookModel, fire_hooks: bool = True) -> dict[str, Any]:
                 return msgspec.to_builtins(self, enc_hook=enc_hook)
 
-            def _encode(self: BaseModel) -> bytes:
+            def _encode(self: HookModel) -> bytes:
                 # Fast path: encode the Struct directly - no intermediate dict.
                 return ENCODER.encode(self)
 
@@ -401,7 +401,7 @@ class ModelMeta(StructMeta):
             _encode_computed_fields = cls.__computed_fields__  # type: ignore
             _encode_serialize_hooks = cls.__serialize_hooks__  # type: ignore
 
-            def _to_builtins(self: BaseModel, fire_hooks: bool = True) -> dict[str, Any]:
+            def _to_builtins(self: HookModel, fire_hooks: bool = True) -> dict[str, Any]:
                 data: dict[str, Any] = msgspec.to_builtins(self, enc_hook=enc_hook)
 
                 for field in _encode_excluded_fields:
@@ -418,14 +418,14 @@ class ModelMeta(StructMeta):
 
                 return data
 
-            def _encode(self: BaseModel) -> bytes:
+            def _encode(self: HookModel) -> bytes:
                 return ENCODER.encode(_to_builtins(self))
 
         # --- build _shared_convert ------------------------------------------
 
         _shared_validate_hooks = cls.__validate_hooks__  # type: ignore
 
-        def _shared_convert(model: BaseModel) -> BaseModel:
+        def _shared_convert(model: HookModel) -> HookModel:
             for field, funcs in _shared_validate_hooks.items():
                 for func in funcs:
                     object.__setattr__(model, field, func(cls, getattr(model, field)))
@@ -437,10 +437,10 @@ class ModelMeta(StructMeta):
         if not cls.__has_decode_features__:  # type: ignore
             decoder = get_decoder(cls)
 
-            def _decode(raw: bytes) -> BaseModel:
+            def _decode(raw: bytes) -> HookModel:
                 return decoder.decode(raw)
 
-            def _convert(data: DictLike) -> BaseModel:
+            def _convert(data: DictLike) -> HookModel:
                 # Fast path: no hooks - convert directly.
                 return msgspec.convert(data, cls, dec_hook=dec_hook)
 
@@ -448,7 +448,7 @@ class ModelMeta(StructMeta):
             _decode_deserialize_hooks = cls.__deserialize_hooks__  # type: ignore
             _decode_validate_hooks = cls.__validate_hooks__  # type: ignore
 
-            def _decode(raw: bytes) -> BaseModel:
+            def _decode(raw: bytes) -> HookModel:
                 data: dict[str, Any] = get_decoder(dict).decode(raw)
 
                 for field, funcs in _decode_deserialize_hooks.items():
@@ -464,7 +464,7 @@ class ModelMeta(StructMeta):
 
                 return obj
 
-            def _convert(data: DictLike) -> BaseModel:
+            def _convert(data: DictLike) -> HookModel:
                 data_dict = dict(data)
 
                 for field, funcs in _decode_deserialize_hooks.items():
@@ -487,7 +487,7 @@ class ModelMeta(StructMeta):
 # ---------------------------------------------------------------------------
 
 
-class BaseModel(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
+class HookModel(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
     """Base class for msgspec-backed models with hooks, computed fields, and
     field exclusion.
 
