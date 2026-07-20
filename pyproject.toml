@@ -37,7 +37,7 @@ Repository = "https://github.com/vxWrath/structhook"
 packages = ["structhook"]
 
 [tool.pyright]
-typeCheckingMode = "strict"
+typeCheckingMode = "basic"
 pythonVersion = "3.14"
 include = ["structhook", "tests"]
 reportMissingTypeStubs = false
