@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Literal, Protocol, Self, dataclass_transform
 
 import msgspec
 from msgspec import NODEFAULT, Struct, StructMeta, json, structs
-from msgspec._core import Factory as _Factory  # type: ignore
+from msgspec._core import Factory as _Factory
 
 __all__ = [
     "HookModel",
@@ -175,8 +175,8 @@ def serialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
         field_or_fields = [field_or_fields]
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        func.__stage__ = Stage.SERIALIZE  # type: ignore
-        func.__fields__ = field_or_fields  # type: ignore
+        func.__stage__ = Stage.SERIALIZE
+        func.__fields__ = field_or_fields
         return func
 
     return decorator
@@ -194,8 +194,8 @@ def deserialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
         field_or_fields = [field_or_fields]
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        func.__stage__ = Stage.DESERIALIZE  # type: ignore
-        func.__fields__ = field_or_fields  # type: ignore
+        func.__stage__ = Stage.DESERIALIZE
+        func.__fields__ = field_or_fields
         return func
 
     return decorator
@@ -217,8 +217,8 @@ def validate(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
         field_or_fields = [field_or_fields]
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        func.__stage__ = Stage.VALIDATE  # type: ignore
-        func.__fields__ = field_or_fields  # type: ignore
+        func.__stage__ = Stage.VALIDATE
+        func.__fields__ = field_or_fields
         return func
 
     return decorator
@@ -286,13 +286,13 @@ class ModelMeta(StructMeta):
                 fields.append((key, value))
                 namespace[key] = msgspec.field(
                     default=value.default,
-                    default_factory=value.default_factory,  # type: ignore
+                    default_factory=value.default_factory,
                     name=value.name,
-                )
+                )  # type: ignore
 
             elif callable(value) and hasattr(value, "__stage__") and hasattr(value, "__fields__"):
-                for hook_field in value.__fields__:  # type: ignore
-                    hooks[value.__stage__].setdefault(hook_field, []).append(value)  # type: ignore
+                for hook_field in value.__fields__:
+                    hooks[value.__stage__].setdefault(hook_field, []).append(value)
 
             elif isinstance(value, computedproperty) and getattr(
                 value, "__computed_field__", False
@@ -342,7 +342,7 @@ class ModelMeta(StructMeta):
                         field_name,
                         Field(
                             default=default,
-                            default_factory=default_factory,  # type: ignore
+                            default_factory=default_factory,
                             name=field_name,
                         ),
                     ),
@@ -373,9 +373,7 @@ class ModelMeta(StructMeta):
         cls.__has_encode_features__ = bool(  # type: ignore
             computed_fields_tuple or excluded_fields or cls.__serialize_hooks__  # type: ignore
         )
-        cls.__has_decode_features__ = bool(  # type: ignore
-            cls.__deserialize_hooks__ or cls.__validate_hooks__  # type: ignore
-        )
+        cls.__has_decode_features__ = bool(cls.__deserialize_hooks__ or cls.__validate_hooks__)  # type: ignore
 
         # --- build _to_builtins / _encode -----------------------------------
 

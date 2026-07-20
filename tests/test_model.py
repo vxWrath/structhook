@@ -379,7 +379,7 @@ class TestFrozen:
     def test_frozen_with_validate_raises_at_class_creation(self) -> None:
         with pytest.raises(TypeError, match="frozen"):
 
-            class _FrozenBad(HookModel, frozen=True):  # type: ignore
+            class _FrozenBad(HookModel, frozen=True):
                 x: int
 
                 @validate("x")
