@@ -4,7 +4,7 @@ from structhook.dotdict import DotDict
 from structhook.model import (
     DictLike,
     Field,
-    HookModel,
+    HookStruct,
     Stage,
     computed_field,
     deserialize,
@@ -17,7 +17,7 @@ __all__ = [
     "DictLike",
     "DotDict",
     "Field",
-    "HookModel",
+    "HookStruct",
     "Stage",
     "computed_field",
     "deserialize",

@@ -7,7 +7,7 @@ from msgspec import NODEFAULT
 
 from structhook import (
     Field,
-    HookModel,
+    HookStruct,
     Stage,
     computed_field,
     deserialize,
@@ -21,7 +21,7 @@ from structhook import (
 # ---------------------------------------------------------------------------
 
 
-class Simple(HookModel):
+class Simple(HookStruct):
     name: str
     age: int = 0
 
@@ -140,7 +140,7 @@ class TestField:
             field(default=1, default_factory=list)
 
 
-class ModelWithFieldOptions(HookModel):
+class ModelWithFieldOptions(HookStruct):
     required: str
     optional: str = "fallback"
     factory_list: list[int] = field(default_factory=list)
@@ -177,7 +177,7 @@ class TestFieldOptions:
 # ---------------------------------------------------------------------------
 
 
-class WithExcluded(HookModel):
+class WithExcluded(HookStruct):
     public: str
     secret: str = field(exclude=True)
 
@@ -209,7 +209,7 @@ class TestExcludedFields:
 # ---------------------------------------------------------------------------
 
 
-class WithComputed(HookModel):
+class WithComputed(HookStruct):
     first: str
     last: str
 
@@ -248,7 +248,7 @@ class TestComputedFields:
 # ---------------------------------------------------------------------------
 
 
-class WithSerialize(HookModel):
+class WithSerialize(HookStruct):
     name: str
     count: int = 0
 
@@ -275,7 +275,7 @@ class TestSerializeHooks:
         assert m.dump(mode="json", fire_hooks=False)["name"] == "alice"
 
 
-class WithMultiFieldSerialize(HookModel):
+class WithMultiFieldSerialize(HookStruct):
     a: str = ""
     b: str = ""
 
@@ -297,7 +297,7 @@ class TestMultiFieldSerialize:
 # ---------------------------------------------------------------------------
 
 
-class WithDeserialize(HookModel):
+class WithDeserialize(HookStruct):
     name: str
     age: int = 0
 
@@ -321,7 +321,7 @@ class TestDeserializeHooks:
 # ---------------------------------------------------------------------------
 
 
-class WithValidate(HookModel):
+class WithValidate(HookStruct):
     score: int
 
     @validate("score")
@@ -345,7 +345,7 @@ class TestValidateHooks:
         assert m.score == 75
 
 
-class ChainedValidate(HookModel):
+class ChainedValidate(HookStruct):
     x: int = 0
 
     @validate("x")
@@ -370,7 +370,7 @@ class TestChainedValidate:
 
 class TestFrozen:
     def test_frozen_without_hooks_works(self) -> None:
-        class FrozenOk(HookModel, frozen=True):
+        class FrozenOk(HookStruct, frozen=True):
             x: int
 
         m = FrozenOk(x=1)
@@ -379,7 +379,7 @@ class TestFrozen:
     def test_frozen_with_validate_raises_at_class_creation(self) -> None:
         with pytest.raises(TypeError, match="frozen"):
 
-            class _FrozenBad(HookModel, frozen=True):
+            class _FrozenBad(HookStruct, frozen=True):
                 x: int
 
                 @validate("x")
@@ -392,7 +392,7 @@ class TestFrozen:
 # ---------------------------------------------------------------------------
 
 
-class WithSerializeAndComputed(HookModel):
+class WithSerializeAndComputed(HookStruct):
     name: str
     secret: str = field(exclude=True, default="shh")
 
@@ -449,7 +449,7 @@ class TestDictLike:
 # ---------------------------------------------------------------------------
 
 
-class Parent(HookModel):
+class Parent(HookStruct):
     name: str
 
 
@@ -484,7 +484,7 @@ class TestInheritance:
 
 class TestEdgeCases:
     def test_empty_model(self) -> None:
-        class Empty(HookModel):
+        class Empty(HookStruct):
             pass
 
         m = Empty()
@@ -492,10 +492,10 @@ class TestEdgeCases:
         assert m.dump() == {}
 
     def test_nested_models(self) -> None:
-        class Inner(HookModel):
+        class Inner(HookStruct):
             x: int
 
-        class Outer(HookModel):
+        class Outer(HookStruct):
             inner: Inner
 
         o = Outer(inner=Inner(x=1))
@@ -516,7 +516,7 @@ class TestEdgeCases:
     def test_validate_transform(self) -> None:
         """Validate hooks can transform values."""
 
-        class Transform(HookModel):
+        class Transform(HookStruct):
             x: int
 
             @validate("x")
@@ -529,7 +529,7 @@ class TestEdgeCases:
     def test_deserialize_before_validate(self) -> None:
         """Deserialize hooks run before validate hooks."""
 
-        class Order(HookModel):
+        class Order(HookStruct):
             value: str = ""
 
             @deserialize("value")
@@ -556,7 +556,7 @@ class TestEdgeCases:
         assert Stage.VALIDATE == "validate"
 
     def test_extra_metadata_preserved(self) -> None:
-        class WithExtra(HookModel):
+        class WithExtra(HookStruct):
             name: str = field(extra={"doc": "The name"})
 
         assert WithExtra.__fields__["name"].extra == {"doc": "The name"}

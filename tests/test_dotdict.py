@@ -2,7 +2,7 @@
 
 import pytest
 
-from structhook import DotDict, HookModel
+from structhook import DotDict, HookStruct
 
 # ---------------------------------------------------------------------------
 # Basic dot access
@@ -158,15 +158,15 @@ class TestDecode:
 
 
 # ---------------------------------------------------------------------------
-# Integration with HookModel encode/decode hooks
+# Integration with HookStruct encode/decode hooks
 # ---------------------------------------------------------------------------
 
 
-class TestHookModelIntegration:
+class TestHookStructIntegration:
     def test_dotdict_as_field_decodes(self) -> None:
         """DotDict typed fields should decode via dec_hook."""
 
-        class WithDotDict(HookModel):
+        class WithDotDict(HookStruct):
             metadata: DotDict
 
         m = WithDotDict.decode(b'{"metadata": {"key": "value", "nested": {"a": 1}}}')
@@ -175,7 +175,7 @@ class TestHookModelIntegration:
         assert m.metadata.nested.a == 1
 
     def test_dotdict_in_list_field(self) -> None:
-        class WithDotDictList(HookModel):
+        class WithDotDictList(HookStruct):
             items: list[DotDict]
 
         m = WithDotDictList.decode(b'{"items": [{"a": 1}, {"b": 2}]}')
@@ -184,7 +184,7 @@ class TestHookModelIntegration:
         assert m.items[1].b == 2
 
     def test_dotdict_encodes_to_plain_dict(self) -> None:
-        class WithDotDict(HookModel):
+        class WithDotDict(HookStruct):
             metadata: DotDict
 
         m = WithDotDict(metadata=DotDict(key="value"))
@@ -192,7 +192,7 @@ class TestHookModelIntegration:
         assert b'"metadata":{"key":"value"}' in encoded
 
     def test_dotdict_roundtrip(self) -> None:
-        class WithDotDict(HookModel):
+        class WithDotDict(HookStruct):
             metadata: DotDict
 
         original = WithDotDict(metadata=DotDict(key="value", nested=DotDict(a=1)))
@@ -203,7 +203,7 @@ class TestHookModelIntegration:
         assert isinstance(decoded.metadata.nested, DotDict)
 
     def test_dotdict_dump(self) -> None:
-        class WithDotDict(HookModel):
+        class WithDotDict(HookStruct):
             metadata: DotDict
 
         m = WithDotDict(metadata=DotDict(key="value"))

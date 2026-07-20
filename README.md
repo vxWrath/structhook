@@ -130,12 +130,12 @@ A `dict` subclass with attribute-style access. Nested dicts and lists of dicts a
 True
 ```
 
-`DotDict` also works as a field type in `HookModel` subclasses — the encode/decode hooks handle conversion to and from plain dicts automatically.
+`DotDict` also works as a field type in `HookStruct` subclasses — the encode/decode hooks handle conversion to and from plain dicts automatically.
 
 ```pycon
->>> from structhook import HookModel, DotDict
+>>> from structhook import HookStruct, DotDict
 
->>> class Config(HookModel):
+>>> class Config(HookStruct):
 ...     name: str
 ...     metadata: DotDict  # arbitrary JSON, no schema needed
 ...
