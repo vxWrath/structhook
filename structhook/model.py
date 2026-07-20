@@ -1,0 +1,616 @@
+"""Core model wrapper for msgspec.
+
+Provides :class:`BaseModel`, a drop-in replacement for :class:`msgspec.Struct`
+that adds:
+
+* **Field metadata** - :func:`field` / :class:`Field` with ``exclude`` and
+  ``extra`` options.
+* **Lifecycle hooks** - :func:`serialize`, :func:`deserialize`, and
+  :func:`validate` decorators for per-field transform pipelines.
+* **Computed fields** - :func:`computed_field` for read-only derived values
+  that appear in serialized output.
+* **Dict-like access** - ``model["key"]`` / ``model["key"] = value`` mapping
+  API.
+* **Controlled output** - :meth:`BaseModel.dump` with ``include`` filtering,
+  ``fire_hooks`` toggle, and JSON / Python mode selection.
+"""
+
+from collections.abc import Buffer, Callable, Sequence
+from enum import StrEnum
+from functools import cache
+from typing import (
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    Self,
+    dataclass_transform,
+    overload,
+)
+
+import msgspec
+from msgspec import NODEFAULT, Struct, StructMeta, json, structs
+from msgspec._core import Factory as _Factory  # type: ignore
+
+__all__ = [
+    "BaseModel",
+    "DictLike",
+    "Field",
+    "Stage",
+    "computed_field",
+    "deserialize",
+    "field",
+    "serialize",
+    "validate",
+]
+
+
+def enc_hook(obj: Any) -> Any:
+    """Called when msgspec encounters a type it can't encode."""
+    raise TypeError(f"Cannot encode object of type {type(obj)}")
+
+
+def dec_hook(typ: type[Any], obj: Any) -> Any:
+    """Called when decoding into a type msgspec doesn't natively support."""
+    raise TypeError(f"Cannot decode into type {typ}")
+
+
+ENCODER = json.Encoder(enc_hook=enc_hook)
+
+
+@cache
+def get_decoder[T](type: type[T]) -> json.Decoder[T]:
+    """Return a cached Decoder for the given type."""
+    return json.Decoder(type, dec_hook=dec_hook)
+
+
+# ---------------------------------------------------------------------------
+# Dict-like protocol
+# ---------------------------------------------------------------------------
+
+
+class DictLike(Protocol):
+    """A dict-like object: has string keys and supports ``__getitem__``.
+
+    This is the minimal interface needed by :meth:`BaseModel.convert` - any
+    type that can be passed to ``dict()`` and indexed by string keys works.
+    """
+
+    def keys(self) -> Any: ...
+    def __getitem__(self, key: str, /) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
+# Field descriptor
+# ---------------------------------------------------------------------------
+
+
+class Field:
+    """Descriptor for a model field with optional metadata.
+
+    Parameters
+    ----------
+    default:
+        Default value for the field.  Use :data:`msgspec.NODEFAULT` to mark it
+        as required.
+    default_factory:
+        A zero-argument callable that produces a default value.  Mutually
+        exclusive with *default*.
+    name:
+        Override the serialized field name (maps to *msgspec*'s ``name``).
+    exclude:
+        If ``True`` the field is excluded from encoding / ``dump()`` output.
+    extra:
+        Arbitrary user-defined metadata.  Not consumed by the framework -
+        intended for third-party tooling (e.g. code-generation, OpenAPI
+        schema builders, ORM bridges).
+    """
+
+    def __init__(
+        self,
+        *,
+        default: Any = NODEFAULT,
+        default_factory: Any | Callable[[], Any] | None = NODEFAULT,
+        name: str | None = None,
+        exclude: bool = False,
+        extra: Any | None = None,
+    ) -> None:
+        self.default = default
+        self.default_factory = default_factory
+        self.name = name
+
+        self.exclude = exclude
+        self.extra = extra
+
+    def __repr__(self) -> str:
+        return (
+            f"Field(default={self.default!r}, default_factory={self.default_factory!r}, "
+            f"name={self.name!r}, is_required={self.is_required!r}, exclude={self.exclude!r})"
+        )
+
+    @property
+    def is_required(self) -> bool:
+        return self.default is NODEFAULT and self.default_factory is NODEFAULT
+
+
+def field(
+    *,
+    default: Any = NODEFAULT,
+    default_factory: Any | Callable[[], Any] | None = NODEFAULT,
+    name: str | None = None,
+    exclude: bool = False,
+    extra: Any | None = None,
+) -> Any:
+    """Declare a model field with extra metadata.
+
+    Returns a :class:`Field` instance that the :class:`ModelMeta` metaclass
+    converts into a native :func:`msgspec.field` at class-creation time.
+    """
+    if default is not NODEFAULT and default_factory is not NODEFAULT:
+        raise ValueError("Cannot specify both default and default_factory")
+
+    return Field(
+        default=default,
+        default_factory=default_factory,
+        name=name,
+        exclude=exclude,
+        extra=extra,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hook decorators
+# ---------------------------------------------------------------------------
+
+
+class Stage(StrEnum):
+    """Enum for hook pipeline stages."""
+
+    SERIALIZE = "serialize"
+    DESERIALIZE = "deserialize"
+    VALIDATE = "validate"
+
+
+def serialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
+    """Register a function as a *serialize* hook for the given field(s).
+
+    The hook receives ``(model_instance, current_value)`` and must return the
+    serialized value.  Serialize hooks fire **after** computed fields and
+    excluded fields are processed, but **before** JSON encoding.
+    """
+
+    if isinstance(field_or_fields, str):
+        field_or_fields = [field_or_fields]
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        func.__stage__ = Stage.SERIALIZE  # type: ignore
+        func.__fields__ = field_or_fields  # type: ignore
+        return func
+
+    return decorator
+
+
+def deserialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
+    """Register a function as a *deserialize* hook for the given field(s).
+
+    The hook receives ``(model_class, raw_value)`` and must return the
+    deserialized value.  It runs on the raw decoded dict **before** struct
+    conversion, so the value may still be an un-coerced JSON primitive.
+    """
+
+    if isinstance(field_or_fields, str):
+        field_or_fields = [field_or_fields]
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        func.__stage__ = Stage.DESERIALIZE  # type: ignore
+        func.__fields__ = field_or_fields  # type: ignore
+        return func
+
+    return decorator
+
+
+def validate(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
+    """Register a function as a *validate* hook for the given field(s).
+
+    The hook receives ``(model_class, converted_value)`` and must return the
+    (possibly transformed) value.  It runs **after** struct conversion, so the
+    value is already coerced to the field's declared type.
+
+    .. warning::
+        Validate hooks use ``object.__setattr__`` to mutate the model after
+        construction and are therefore **incompatible** with ``frozen=True``.
+    """
+
+    if isinstance(field_or_fields, str):
+        field_or_fields = [field_or_fields]
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        func.__stage__ = Stage.VALIDATE  # type: ignore
+        func.__fields__ = field_or_fields  # type: ignore
+        return func
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# Computed fields
+# ---------------------------------------------------------------------------
+
+
+class computedproperty(property):
+    """A :class:`property` subclass that marks the method as a computed field."""
+
+    __slots__ = ()
+    __computed_field__ = True
+
+
+def computed_field(func: Callable[..., Any]) -> property:
+    """Mark a method as a *computed field*.
+
+    The method becomes a read-only property whose value is injected into
+    ``dump()`` / ``encode()`` output but is **not** stored in the underlying
+    struct.
+
+    Example::
+
+        class User(BaseModel):
+            first: str
+            last: str
+
+            @computed_field
+            def full_name(self) -> str:
+                return f"{self.first} {self.last}"
+    """
+    return computedproperty(func)
+
+
+# ---------------------------------------------------------------------------
+# Metaclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass_transform(field_descriptors=(field,), kw_only_default=True)  # type: ignore
+class ModelMeta(StructMeta):
+    """Metaclass that wires up hooks, computed fields, and encode/decode logic."""
+
+    def __new__(
+        mcls,
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, Any],
+        **kwargs: Any,
+    ) -> type:
+        fields: list[tuple[str, Field]] = []
+        computed_fields: list[str] = []
+
+        hooks: dict[Stage, dict[str, list[Callable[..., Any]]]] = {
+            Stage.SERIALIZE: {},
+            Stage.DESERIALIZE: {},
+            Stage.VALIDATE: {},
+        }
+
+        for key, value in namespace.items():
+            if isinstance(value, Field):
+                fields.append((key, value))
+                namespace[key] = msgspec.field(
+                    default=value.default,
+                    default_factory=value.default_factory,  # type: ignore
+                    name=value.name,
+                )
+
+            elif callable(value) and hasattr(value, "__stage__") and hasattr(value, "__fields__"):
+                for hook_field in value.__fields__:  # type: ignore
+                    hooks[value.__stage__].setdefault(hook_field, []).append(value)  # type: ignore
+
+            elif isinstance(value, computedproperty) and getattr(
+                value, "__computed_field__", False
+            ):
+                computed_fields.append(key)
+
+        # Propagate kw_only and dict from parent BaseModel subclasses.
+        # msgspec does not expose these in __struct_config__, so we track
+        # them ourselves via __kw_only__ / __dict__ sentinel attributes.
+        for base in bases:
+            if getattr(base, "__kw_only__", False):
+                kwargs.setdefault("kw_only", True)
+            if getattr(base, "__structhook_dict__", False):
+                kwargs.setdefault("dict", True)
+
+        cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+
+        cls.__kw_only__ = kwargs.get("kw_only", False)  # type: ignore
+        cls.__structhook_dict__ = kwargs.get("dict", False)  # type: ignore
+
+        # After super().__new__, __struct_config__ is available - use it as
+        # the authoritative source (handles inheritance correctly).
+        is_frozen = cls.__struct_config__.frozen
+
+        # --- rebuild the canonical Field list (merges parent fields) -------
+
+        npos = len(cls.__struct_fields__) - len(cls.__struct_defaults__)
+        for i, (field_name, default_obj) in enumerate(
+            zip(
+                cls.__struct_fields__,
+                (NODEFAULT,) * npos + cls.__struct_defaults__,
+                strict=True,
+            )
+        ):
+            default = default_factory = NODEFAULT
+
+            if isinstance(default_obj, _Factory):
+                default_factory = default_obj.factory  # type: ignore
+
+            elif default_obj is not NODEFAULT:
+                default = default_obj
+
+            if not any(key == field_name for key, _ in fields):
+                fields.insert(
+                    i,
+                    (
+                        field_name,
+                        Field(
+                            default=default,
+                            default_factory=default_factory,  # type: ignore
+                            name=field_name,
+                        ),
+                    ),
+                )
+
+        all_fields = dict(fields)
+        computed_fields_tuple = tuple(computed_fields)
+        excluded_fields = frozenset(name for name, f in all_fields.items() if f.exclude)
+
+        cls.__fields__ = all_fields  # type: ignore
+        cls.__computed_fields__ = computed_fields_tuple  # type: ignore
+        cls.__excluded_fields__ = excluded_fields  # type: ignore
+        cls.__serialize_hooks__ = hooks[Stage.SERIALIZE]  # type: ignore
+        cls.__deserialize_hooks__ = hooks[Stage.DESERIALIZE]  # type: ignore
+        cls.__validate_hooks__ = hooks[Stage.VALIDATE]  # type: ignore
+
+        # --- guard: frozen + validate hooks ---------------------------------
+
+        if is_frozen and cls.__validate_hooks__:  # type: ignore
+            raise TypeError(
+                f"Cannot create frozen model {name!r} with validate hooks. "
+                f"Validate hooks require post-construction mutation via "
+                f"object.__setattr__, which is incompatible with frozen=True."
+            )
+
+        # --- feature flags --------------------------------------------------
+
+        cls.__has_encode_features__ = bool(  # type: ignore
+            computed_fields_tuple or excluded_fields or cls.__serialize_hooks__  # type: ignore
+        )
+        cls.__has_decode_features__ = bool(  # type: ignore
+            cls.__deserialize_hooks__ or cls.__validate_hooks__  # type: ignore
+        )
+
+        # --- build _to_builtins / _encode -----------------------------------
+
+        if not cls.__has_encode_features__:  # type: ignore
+
+            def _to_builtins(self: BaseModel, fire_hooks: bool = True) -> dict[str, Any]:
+                return msgspec.to_builtins(self, enc_hook=enc_hook)
+
+            def _encode(self: BaseModel) -> bytes:
+                # Fast path: encode the Struct directly - no intermediate dict.
+                return ENCODER.encode(self)
+
+        else:
+            _encode_excluded_fields = cls.__excluded_fields__  # type: ignore
+            _encode_computed_fields = cls.__computed_fields__  # type: ignore
+            _encode_serialize_hooks = cls.__serialize_hooks__  # type: ignore
+
+            def _to_builtins(self: BaseModel, fire_hooks: bool = True) -> dict[str, Any]:
+                data: dict[str, Any] = msgspec.to_builtins(self, enc_hook=enc_hook)
+
+                for field in _encode_excluded_fields:
+                    data.pop(field, None)
+
+                for field in _encode_computed_fields:
+                    data[field] = getattr(self, field)
+
+                if fire_hooks:
+                    for field, funcs in _encode_serialize_hooks.items():
+                        if field in data:
+                            for func in funcs:
+                                data[field] = func(self, data[field])
+
+                return data
+
+            def _encode(self: BaseModel) -> bytes:
+                return ENCODER.encode(_to_builtins(self))
+
+        # --- build _shared_convert ------------------------------------------
+
+        _shared_validate_hooks = cls.__validate_hooks__  # type: ignore
+
+        def _shared_convert(model: BaseModel) -> BaseModel:
+            for field, funcs in _shared_validate_hooks.items():
+                for func in funcs:
+                    object.__setattr__(model, field, func(cls, getattr(model, field)))
+
+            return model
+
+        # --- build _decode / _convert ---------------------------------------
+
+        if not cls.__has_decode_features__:  # type: ignore
+            decoder = get_decoder(cls)
+
+            def _decode(raw: bytes) -> BaseModel:
+                return decoder.decode(raw)
+
+            def _convert(data: DictLike) -> BaseModel:
+                # Fast path: no hooks - convert directly.
+                return msgspec.convert(data, cls, dec_hook=dec_hook)
+
+        else:
+            _decode_deserialize_hooks = cls.__deserialize_hooks__  # type: ignore
+            _decode_validate_hooks = cls.__validate_hooks__  # type: ignore
+
+            def _decode(raw: bytes) -> BaseModel:
+                data: dict[str, Any] = get_decoder(dict).decode(raw)
+
+                for field, funcs in _decode_deserialize_hooks.items():
+                    if field in data:
+                        for func in funcs:
+                            data[field] = func(cls, data[field])
+
+                obj = msgspec.convert(data, cls, dec_hook=dec_hook)
+
+                for field, funcs in _decode_validate_hooks.items():
+                    for func in funcs:
+                        object.__setattr__(obj, field, func(cls, getattr(obj, field)))
+
+                return obj
+
+            def _convert(data: DictLike) -> BaseModel:
+                data_dict = dict(data)
+
+                for field, funcs in _decode_deserialize_hooks.items():
+                    if field in data_dict:
+                        for func in funcs:
+                            data_dict[field] = func(cls, data_dict[field])
+
+                return _shared_convert(msgspec.convert(data_dict, cls, dec_hook=dec_hook))
+
+        cls.__to_builtins_func__ = _to_builtins  # type: ignore
+        cls.__encode_func__ = _encode  # type: ignore
+        cls.__decode_func__ = _decode  # type: ignore
+        cls.__convert_func__ = _convert  # type: ignore
+
+        return cls
+
+
+# ---------------------------------------------------------------------------
+# Base model
+# ---------------------------------------------------------------------------
+
+
+class BaseModel(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
+    """Base class for msgspec-backed models with hooks, computed fields, and
+    field exclusion.
+
+    Subclass this instead of :class:`msgspec.Struct` to get hooks, computed
+    fields, and field-exclusion support.
+
+    .. warning::
+        ``frozen=True`` is incompatible with :func:`validate` hooks (they
+        require post-construction mutation via ``object.__setattr__``).
+        Creating a frozen model with validate hooks raises ``TypeError`` at
+        class-definition time.
+
+        Likewise, the mapping API (``model["key"] = value``) uses
+        ``object.__setattr__`` and will fail on frozen instances at runtime.
+    """
+
+    __fields__: ClassVar[dict[str, Field]]
+    __computed_fields__: ClassVar[tuple[str, ...]]
+    __excluded_fields__: ClassVar[frozenset[str]]
+
+    __serialize_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
+    __deserialize_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
+    __validate_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
+
+    __has_encode_features__: ClassVar[bool]
+    __has_decode_features__: ClassVar[bool]
+
+    __to_builtins_func__: ClassVar[Callable[..., dict[str, Any]]]
+    __encode_func__: ClassVar[Callable[[Self], bytes]]
+    __decode_func__: ClassVar[Callable[[Buffer | str], Self]]
+    __convert_func__: ClassVar[Callable[[DictLike], Self]]
+
+    # ---------------------------- mapping API -----------------------------
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, val: Any) -> None:
+        object.__setattr__(self, key, val)
+
+    # ---------------------------- serialization ---------------------------
+
+    def encode(self) -> bytes:
+        """Encode the model to JSON bytes (always fires hooks)."""
+        return self.__class__.__encode_func__(self)
+
+    @overload
+    def dump(
+        self,
+        mode: Literal["python", "json"] = "python",
+        *,
+        include: None = None,
+        fire_hooks: bool = True,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def dump(
+        self,
+        mode: Literal["python", "json"] = "python",
+        *,
+        include: Sequence[str],
+        fire_hooks: bool = True,
+    ) -> list[Any]: ...
+
+    def dump(
+        self,
+        mode: Literal["python", "json"] = "python",
+        *,
+        include: Sequence[str] | None = None,
+        fire_hooks: bool = True,
+    ) -> dict[str, Any] | list[Any]:
+        """Convert the model to a plain Python dict (or JSON round-tripped dict).
+
+        Parameters
+        ----------
+        mode:
+            ``"python"`` returns the result of :func:`msgspec.to_builtins`
+            (plus computed fields, minus excluded fields, and optionally
+            serialize hooks).  ``"json"`` round-trips through JSON so that
+            dates, UUIDs, etc. are rendered as their JSON string forms.
+        include:
+            If provided, return a **list** of values for only the named
+            fields (in order), dropping any that aren't present.
+        fire_hooks:
+            If ``False``, skip serialize hooks.  Excluded and computed fields
+            are still processed.  Defaults to ``True``.
+        """
+        data = self.__class__.__to_builtins_func__(self, fire_hooks=fire_hooks)
+
+        if mode == "json":
+            data = msgspec.json.decode(ENCODER.encode(data))
+
+        if include is not None:
+            return [data[field] for field in include if field in data]
+        return data
+
+    # ---------------------------- deserialization -------------------------
+
+    @classmethod
+    def decode(cls, raw_data: Buffer | str) -> Self:
+        """Decode JSON bytes into a model instance."""
+        return cls.__decode_func__(raw_data)
+
+    @classmethod
+    def convert(cls, data: DictLike) -> Self:
+        """Convert a dict-like object into a model instance."""
+        return cls.__convert_func__(data)
+
+    # ---------------------------- utilities -------------------------------
+
+    def copy(self, **changes: Any) -> Self:
+        """Return a shallow copy with the given field values replaced.
+
+        Raises
+        ------
+        TypeError
+            If any key in *changes* names a computed field - those are
+            derived from other fields and cannot be set directly.
+        """
+        for field in self.__computed_fields__:
+            if field in changes:
+                raise TypeError(
+                    f"Cannot set computed field {field!r} via copy(). "
+                    f"Computed fields are derived from other fields."
+                )
+        return structs.replace(self, **changes)

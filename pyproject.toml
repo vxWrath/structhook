@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "structhook"
+version = "0.1.0"
+description = "Extra field info, computed fields, and hooks for `msgspec.Struct`."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.14"
+authors = [{ name = "vxWrath", email = "wrath.business0@gmail.com" }]
+keywords = ["msgspec", "serialization", "json", "struct", "hooks"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = ["msgspec>=0.21.1"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=6",
+    "pyright>=1.1.400",
+    "ruff>=0.11",
+]
+
+[project.urls]
+Homepage = "https://github.com/vxWrath/structhook"
+Repository = "https://github.com/vxWrath/structhook"
+
+[tool.hatch.build.targets.wheel]
+packages = ["structhook"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+include = ["structhook", "tests"]
+reportMissingTypeStubs = false
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["UP037", "N801"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-v", "--strict-markers", "--tb=short"]
+
+[tool.coverage.run]
+source = ["structhook"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
+    "class .*\\bProtocol\\):",
+    "\\.\\.\\.",
+]
