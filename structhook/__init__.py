@@ -1,9 +1,9 @@
 """structhook - Extra field info, computed fields, and hooks for `msgspec.Struct`."""
 
 from structhook.model import (
-    BaseModel,
     DictLike,
     Field,
+    HookModel,
     Stage,
     computed_field,
     deserialize,
@@ -13,9 +13,9 @@ from structhook.model import (
 )
 
 __all__ = [
-    "BaseModel",
     "DictLike",
     "Field",
+    "HookModel",
     "Stage",
     "computed_field",
     "deserialize",

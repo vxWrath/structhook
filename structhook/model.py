@@ -18,15 +18,7 @@ that adds:
 from collections.abc import Buffer, Callable, Sequence
 from enum import StrEnum
 from functools import cache
-from typing import (
-    Any,
-    ClassVar,
-    Literal,
-    Protocol,
-    Self,
-    dataclass_transform,
-    overload,
-)
+from typing import Any, ClassVar, Literal, Protocol, Self, dataclass_transform
 
 import msgspec
 from msgspec import NODEFAULT, Struct, StructMeta, json, structs
@@ -534,31 +526,14 @@ class HookModel(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
         """Encode the model to JSON bytes (always fires hooks)."""
         return self.__class__.__encode_func__(self)
 
-    @overload
-    def dump(
-        self,
-        mode: Literal["python", "json"] = "python",
-        *,
-        include: None = None,
-        fire_hooks: bool = True,
-    ) -> dict[str, Any]: ...
-
-    @overload
-    def dump(
-        self,
-        mode: Literal["python", "json"] = "python",
-        *,
-        include: Sequence[str],
-        fire_hooks: bool = True,
-    ) -> list[Any]: ...
-
     def dump(
         self,
         mode: Literal["python", "json"] = "python",
         *,
         include: Sequence[str] | None = None,
+        exclude: Sequence[str] | None = None,
         fire_hooks: bool = True,
-    ) -> dict[str, Any] | list[Any]:
+    ) -> dict[str, Any]:
         """Convert the model to a plain Python dict (or JSON round-tripped dict).
 
         Parameters
@@ -569,8 +544,10 @@ class HookModel(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
             serialize hooks).  ``"json"`` round-trips through JSON so that
             dates, UUIDs, etc. are rendered as their JSON string forms.
         include:
-            If provided, return a **list** of values for only the named
-            fields (in order), dropping any that aren't present.
+            If provided, return only the named fields (dropping any that
+            aren't present).
+        exclude:
+            If provided, return all fields except the named ones.
         fire_hooks:
             If ``False``, skip serialize hooks.  Excluded and computed fields
             are still processed.  Defaults to ``True``.
@@ -581,8 +558,25 @@ class HookModel(Struct, kw_only=True, dict=True, metaclass=ModelMeta):
             data = msgspec.json.decode(ENCODER.encode(data))
 
         if include is not None:
-            return [data[field] for field in include if field in data]
+            return {field: data[field] for field in include if field in data}
+        if exclude is not None:
+            return {field: data[field] for field in data if field not in exclude}
         return data
+
+    def to_positional(
+        self,
+        mode: Literal["python", "json"] = "python",
+        *,
+        include: Sequence[str] | None = None,
+        exclude: Sequence[str] | None = None,
+        fire_hooks: bool = True,
+    ) -> tuple[Any, ...]:
+        """Alias for :meth:`dump` but converts the result to a tuple of values.
+
+        See :meth:`dump` for details.
+        """
+        data = self.dump(mode, include=include, exclude=exclude, fire_hooks=fire_hooks)
+        return tuple(data.values())
 
     # ---------------------------- deserialization -------------------------
 

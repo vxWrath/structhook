@@ -6,8 +6,8 @@ import pytest
 from msgspec import NODEFAULT
 
 from structhook import (
-    BaseModel,
     Field,
+    HookModel,
     Stage,
     computed_field,
     deserialize,
@@ -21,7 +21,7 @@ from structhook import (
 # ---------------------------------------------------------------------------
 
 
-class Simple(BaseModel):
+class Simple(HookModel):
     name: str
     age: int = 0
 
@@ -71,11 +71,11 @@ class TestBasicModel:
 
     def test_dump_include(self) -> None:
         s = Simple(name="Alice", age=30)
-        assert s.dump(include=["name"]) == ["Alice"]
+        assert s.dump(include=["name"]) == {"name": "Alice"}
 
     def test_dump_include_missing(self) -> None:
         s = Simple(name="Alice", age=30)
-        assert s.dump(include=["name", "missing"]) == ["Alice"]
+        assert s.dump(include=["name", "missing"]) == {"name": "Alice"}
 
     def test_getitem(self) -> None:
         s = Simple(name="Alice", age=30)
@@ -140,7 +140,7 @@ class TestField:
             field(default=1, default_factory=list)
 
 
-class ModelWithFieldOptions(BaseModel):
+class ModelWithFieldOptions(HookModel):
     required: str
     optional: str = "fallback"
     factory_list: list[int] = field(default_factory=list)
@@ -177,7 +177,7 @@ class TestFieldOptions:
 # ---------------------------------------------------------------------------
 
 
-class WithExcluded(BaseModel):
+class WithExcluded(HookModel):
     public: str
     secret: str = field(exclude=True)
 
@@ -209,7 +209,7 @@ class TestExcludedFields:
 # ---------------------------------------------------------------------------
 
 
-class WithComputed(BaseModel):
+class WithComputed(HookModel):
     first: str
     last: str
 
@@ -248,7 +248,7 @@ class TestComputedFields:
 # ---------------------------------------------------------------------------
 
 
-class WithSerialize(BaseModel):
+class WithSerialize(HookModel):
     name: str
     count: int = 0
 
@@ -275,7 +275,7 @@ class TestSerializeHooks:
         assert m.dump(mode="json", fire_hooks=False)["name"] == "alice"
 
 
-class WithMultiFieldSerialize(BaseModel):
+class WithMultiFieldSerialize(HookModel):
     a: str = ""
     b: str = ""
 
@@ -297,7 +297,7 @@ class TestMultiFieldSerialize:
 # ---------------------------------------------------------------------------
 
 
-class WithDeserialize(BaseModel):
+class WithDeserialize(HookModel):
     name: str
     age: int = 0
 
@@ -321,7 +321,7 @@ class TestDeserializeHooks:
 # ---------------------------------------------------------------------------
 
 
-class WithValidate(BaseModel):
+class WithValidate(HookModel):
     score: int
 
     @validate("score")
@@ -345,7 +345,7 @@ class TestValidateHooks:
         assert m.score == 75
 
 
-class ChainedValidate(BaseModel):
+class ChainedValidate(HookModel):
     x: int = 0
 
     @validate("x")
@@ -370,7 +370,7 @@ class TestChainedValidate:
 
 class TestFrozen:
     def test_frozen_without_hooks_works(self) -> None:
-        class FrozenOk(BaseModel, frozen=True):
+        class FrozenOk(HookModel, frozen=True):
             x: int
 
         m = FrozenOk(x=1)
@@ -379,7 +379,7 @@ class TestFrozen:
     def test_frozen_with_validate_raises_at_class_creation(self) -> None:
         with pytest.raises(TypeError, match="frozen"):
 
-            class _FrozenBad(BaseModel, frozen=True):  # type: ignore
+            class _FrozenBad(HookModel, frozen=True):  # type: ignore
                 x: int
 
                 @validate("x")
@@ -392,7 +392,7 @@ class TestFrozen:
 # ---------------------------------------------------------------------------
 
 
-class WithSerializeAndComputed(BaseModel):
+class WithSerializeAndComputed(HookModel):
     name: str
     secret: str = field(exclude=True, default="shh")
 
@@ -449,7 +449,7 @@ class TestDictLike:
 # ---------------------------------------------------------------------------
 
 
-class Parent(BaseModel):
+class Parent(HookModel):
     name: str
 
 
@@ -484,7 +484,7 @@ class TestInheritance:
 
 class TestEdgeCases:
     def test_empty_model(self) -> None:
-        class Empty(BaseModel):
+        class Empty(HookModel):
             pass
 
         m = Empty()
@@ -492,10 +492,10 @@ class TestEdgeCases:
         assert m.dump() == {}
 
     def test_nested_models(self) -> None:
-        class Inner(BaseModel):
+        class Inner(HookModel):
             x: int
 
-        class Outer(BaseModel):
+        class Outer(HookModel):
             inner: Inner
 
         o = Outer(inner=Inner(x=1))
@@ -506,7 +506,7 @@ class TestEdgeCases:
 
     def test_include_empty(self) -> None:
         s = Simple(name="Alice")
-        assert s.dump(include=[]) == []
+        assert s.dump(include=[]) == {}
 
     def test_field_repr(self) -> None:
         """Field.__repr__ should not raise."""
@@ -516,7 +516,7 @@ class TestEdgeCases:
     def test_validate_transform(self) -> None:
         """Validate hooks can transform values."""
 
-        class Transform(BaseModel):
+        class Transform(HookModel):
             x: int
 
             @validate("x")
@@ -529,7 +529,7 @@ class TestEdgeCases:
     def test_deserialize_before_validate(self) -> None:
         """Deserialize hooks run before validate hooks."""
 
-        class Order(BaseModel):
+        class Order(HookModel):
             value: str = ""
 
             @deserialize("value")
@@ -556,7 +556,7 @@ class TestEdgeCases:
         assert Stage.VALIDATE == "validate"
 
     def test_extra_metadata_preserved(self) -> None:
-        class WithExtra(BaseModel):
+        class WithExtra(HookModel):
             name: str = field(extra={"doc": "The name"})
 
         assert WithExtra.__fields__["name"].extra == {"doc": "The name"}
