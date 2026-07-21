@@ -668,10 +668,41 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
     # ---------------------------- mapping API -----------------------------
 
     def __getitem__(self, key: str) -> Any:
+        """Return the value of field *key*."""
         return getattr(self, key)
 
     def __setitem__(self, key: str, val: Any) -> None:
+        """Set the value of field *key*.
+
+        Uses ``object.__setattr__`` and will fail at runtime on frozen
+        instances.
+        """
         object.__setattr__(self, key, val)
+
+    def __delitem__(self, key: str) -> None:
+        """Cannot delete fields from a struct.
+
+        Raises :class:`TypeError` unconditionally — struct fields are
+        immutable by design.  Use :meth:`copy` to create a new instance
+        with different field values instead.
+        """
+        raise TypeError(
+            f"Cannot delete field {key!r} from {type(self).__name__!r}. "
+            f"Use .copy() to create a new instance with different field values."
+        )
+
+    def __contains__(self, key: str) -> bool:
+        """Return ``True`` if *key* is a stored or computed field."""
+        return key in self.__class__.__struct_fields__ or key in self.__class__.__computed_fields__
+
+    def __len__(self) -> int:
+        """Return the number of stored and computed fields."""
+        return len(self.__class__.__struct_fields__) + len(self.__class__.__computed_fields__)
+
+    def __iter__(self) -> Any:
+        """Yield the names of all stored and computed fields in declaration order."""
+        yield from self.__class__.__struct_fields__
+        yield from self.__class__.__computed_fields__
 
     # ---------------------------- serialization ---------------------------
 

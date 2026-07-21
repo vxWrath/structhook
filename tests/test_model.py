@@ -97,6 +97,25 @@ class TestBasicModel:
         s["age"] = 31
         assert s.age == 31
 
+    def test_contains(self) -> None:
+        s = Simple(name="Alice", age=30)
+        assert "name" in s
+        assert "age" in s
+        assert "missing" not in s
+
+    def test_len(self) -> None:
+        s = Simple(name="Alice", age=30)
+        assert len(s) == 2
+
+    def test_iter(self) -> None:
+        s = Simple(name="Alice", age=30)
+        assert list(s) == ["name", "age"]
+
+    def test_delitem_raises(self) -> None:
+        s = Simple(name="Alice", age=30)
+        with pytest.raises(TypeError, match="Cannot delete field"):
+            del s["name"]
+
     def test_repr(self) -> None:
         s = Simple(name="Alice", age=30)
         r = repr(s)
