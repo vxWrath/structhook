@@ -111,7 +111,8 @@ class Field:
     def __repr__(self) -> str:
         return (
             f"Field(default={self.default!r}, default_factory={self.default_factory!r}, "
-            f"name={self.name!r}, is_required={self.is_required!r}, exclude={self.exclude!r})"
+            f"name={self.name!r}, is_required={self.is_required!r}, "
+            f"exclude={self.exclude!r}, extra={self.extra!r})"
         )
 
     @property
@@ -763,11 +764,47 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
         include: Sequence[str] | None = None,
         exclude: Sequence[str] | None = None,
         fire_hooks: bool = True,
+        computed: bool = False,
     ) -> tuple[Any, ...]:
-        """Alias for :meth:`dump` but converts the result to a tuple of values.
+        """Return a tuple of field values in declaration order.
 
-        See :meth:`dump` for details.
+        This is intended for use with SQL positional parameters::
+
+            cursor.execute(
+                "INSERT INTO users VALUES (%s, %s, %s)",
+                user.to_positional(include=["name", "email", "age"]),
+            )
+
+        Values appear in struct field declaration order (stored fields
+        first, then computed fields if *computed* is ``True``).  Use
+        *include* to control which fields are emitted and in what order.
+
+        Parameters
+        ----------
+        mode:
+            ``"python"`` (default) or ``"json"`` for JSON round-trip.
+        include:
+            If provided, emit only the named fields in the given order.
+        exclude:
+            If provided, emit all fields except the named ones.  Mutually
+            exclusive with *include*.
+        fire_hooks:
+            If ``False``, skip serialize hooks.
+        computed:
+            If ``True``, include computed fields.  Default ``False``
+            (they typically do not correspond to database columns).
         """
+        if not computed and self.__class__.__computed_fields__:
+            computed_names = list(self.__class__.__computed_fields__)
+            if include is not None:
+                # Filter computed fields out of the include list rather
+                # than using exclude (which is mutually exclusive).
+                include = [f for f in include if f not in computed_names]
+            elif exclude is not None:
+                exclude = list(exclude) + computed_names
+            else:
+                exclude = computed_names
+
         data = self.dump(mode, include=include, exclude=exclude, fire_hooks=fire_hooks)
         return tuple(data.values())
 

@@ -158,11 +158,12 @@ class TestField:
         assert f.name == "custom_name"
 
     def test_repr(self) -> None:
-        f = Field(default=1, name="x", exclude=True)
+        f = Field(default=1, name="x", exclude=True, extra={"doc": "test"})
         r = repr(f)
         assert "default=1" in r
         assert "name='x'" in r
         assert "exclude=True" in r
+        assert "extra={'doc': 'test'}" in r
 
     def test_cannot_set_both_default_and_factory(self) -> None:
         with pytest.raises(ValueError, match="Cannot specify both"):
@@ -732,6 +733,53 @@ class TestEdgeCases:
             name: str = field(extra={"doc": "The name"})
 
         assert WithExtra.__fields__["name"].extra == {"doc": "The name"}
+
+
+# ---------------------------------------------------------------------------
+# to_positional
+# ---------------------------------------------------------------------------
+
+
+class WithComputedForPositional(HookStruct):
+    first: str
+    last: str
+
+    @computed_field
+    def full_name(self) -> str:
+        return f"{self.first} {self.last}"
+
+
+class TestToPositional:
+    def test_basic(self) -> None:
+        m = WithComputedForPositional(first="Alice", last="Smith")
+        assert m.to_positional() == ("Alice", "Smith")
+
+    def test_excludes_computed_by_default(self) -> None:
+        m = WithComputedForPositional(first="Alice", last="Smith")
+        assert "full_name" not in m.to_positional()
+        assert len(m.to_positional()) == 2
+
+    def test_include_computed(self) -> None:
+        m = WithComputedForPositional(first="Alice", last="Smith")
+        result = m.to_positional(computed=True)
+        assert result == ("Alice", "Smith", "Alice Smith")
+
+    def test_include_controls_order(self) -> None:
+        m = WithComputedForPositional(first="Alice", last="Smith")
+        result = m.to_positional(include=["last", "first"])
+        assert result == ("Smith", "Alice")
+
+    def test_with_hooks(self) -> None:
+        class M(HookStruct):
+            name: str
+
+            @serialize("name")
+            def _upper(self, v: str) -> str:
+                return v.upper()
+
+        m = M(name="alice")
+        assert m.to_positional() == ("ALICE",)
+        assert m.to_positional(fire_hooks=False) == ("alice",)
 
 
 # ---------------------------------------------------------------------------
