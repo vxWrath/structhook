@@ -217,20 +217,28 @@ class TestHookStructIntegration:
 
 
 class TestEdgeCases:
-    def test_dict_method_name_key(self) -> None:
-        """Keys that collide with dict methods are NOT accessible via dot."""
+    def test_dict_method_name_key_raises_on_collision(self) -> None:
+        """Keys that collide with dict methods raise AttributeError on dot access."""
         d = DotDict({"keys": "secret", "items": [1, 2]})
-        # dict methods shadow these keys for dot access
-        assert callable(d.keys)
-        assert callable(d.items)
+        # dot access raises because the keys collide with dict methods
+        with pytest.raises(AttributeError, match="collides with a built-in dict method"):
+            _ = d.keys
+        with pytest.raises(AttributeError, match="collides with a built-in dict method"):
+            _ = d.items
         # But [] access still works
         assert d["keys"] == "secret"
         assert d["items"] == [1, 2]
 
+    def test_dict_method_name_no_collision(self) -> None:
+        """When no data key collides, dict methods work normally."""
+        d = DotDict({"name": "Alice"})
+        assert callable(d.keys)
+        assert callable(d.items)
+
     def test_non_string_keys_accessible_via_getitem(self) -> None:
         """Non-string keys work via [] but not dot (dot requires valid identifiers)."""
         d = DotDict()
-        d[1] = "one"  # type: ignore[index]
+        d[1] = "one"  # type: ignore
         assert d[1] == "one"
         # getattr() with a non-string arg raises TypeError before __getattr__
         # is even called, so there's no way to test "d.1" — it's a syntax error.
@@ -246,3 +254,44 @@ class TestEdgeCases:
         d.entries = [{"x": 1}, {"y": 2}]
         assert isinstance(d.entries[0], DotDict)
         assert d.entries[0].x == 1
+
+    def test_setattr_preserves_existing_dotdict(self) -> None:
+        """__setattr__ should not re-wrap an already-existing DotDict."""
+        inner = DotDict(x=1)
+        d = DotDict()
+        d.wrapped = inner
+        assert d.wrapped is inner  # same object, not a copy
+
+    def test_setattr_list_preserves_existing_dotdict(self) -> None:
+        """__setattr__ should not re-wrap DotDict items inside a list."""
+        inner = DotDict(x=1)
+        d = DotDict()
+        d.items_list = [inner, {"y": 2}]
+        assert d.items_list[0] is inner
+        assert isinstance(d.items_list[1], DotDict)
+
+
+# ---------------------------------------------------------------------------
+# decode() with dec_hook
+# ---------------------------------------------------------------------------
+
+
+class TestDecodeWithHook:
+    def test_dec_hook_accepted(self) -> None:
+        """The dec_hook parameter is forwarded to msgspec.json.decode.
+
+        When decoding to plain ``dict`` the hook will not be invoked
+        (msgspec handles all standard JSON types natively), but the
+        parameter is accepted so that callers can pass a hook for use
+        with custom :class:`msgspec.json.Decoder` instances later.
+        """
+
+        calls: list[tuple[type, object]] = []
+
+        def my_hook(typ: type, obj: object) -> object:
+            calls.append((typ, obj))
+            raise TypeError(f"Cannot decode {typ}")
+
+        d = DotDict.decode(b'{"event": "party"}', dec_hook=my_hook)
+        assert d.event == "party"
+        assert len(calls) == 0  # hook never called for dict decode
