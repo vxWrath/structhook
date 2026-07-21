@@ -487,7 +487,6 @@ class HookStructMeta(StructMeta):
         # --- build _to_builtins / _encode -----------------------------------
 
         if not cls.__has_encode_features__:  # type: ignore
-
             if _needs_enc_hook:
 
                 def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
@@ -518,9 +517,7 @@ class HookStructMeta(StructMeta):
                 # DotDict or custom enc_hook present — use to_builtins for
                 # correct enc_hook dispatch on field values.
 
-                def _to_builtins(
-                    self: HookStruct, fire_hooks: bool = True
-                ) -> dict[str, Any]:
+                def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
                     data: dict[str, Any] = msgspec.to_builtins(
                         self, enc_hook=type(self).msgspec_enc_hook
                     )
@@ -544,9 +541,7 @@ class HookStructMeta(StructMeta):
                 # This is faster than to_builtins + pop + add because it
                 # avoids an intermediate dict and does one pass.
 
-                def _to_builtins(
-                    self: HookStruct, fire_hooks: bool = True
-                ) -> dict[str, Any]:
+                def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
                     data: dict[str, Any] = {}
                     if fire_hooks:
                         for fn, hooks in _encode_schema:
@@ -555,7 +550,7 @@ class HookStructMeta(StructMeta):
                                 v = h(self, v)
                             data[fn] = v
                     else:
-                        for fn, hooks in _encode_schema:
+                        for fn, _ in _encode_schema:
                             data[fn] = getattr(self, fn)
                     return data
 

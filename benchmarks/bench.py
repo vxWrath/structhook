@@ -10,11 +10,18 @@ Usage::
 """
 
 import timeit
-from typing import Any
 
 import msgspec
 
-from structhook import DotDict, HookStruct, computed_field, deserialize, field, serialize, validate
+from structhook import (
+    DotDict,
+    HookStruct,
+    computed_field,
+    deserialize,
+    field,
+    serialize,
+    validate,
+)
 
 # ---------------------------------------------------------------------------
 # Number of iterations per benchmark.  Calibrated so the fastest operation
@@ -35,7 +42,7 @@ PAYLOAD_ALL = (
 DATA = {"name": "alice", "age": 30, "score": 95.5, "active": True, "tags": ["dev", "admin"]}
 DATA_ALL = {**DATA, "secret": "hidden"}
 
-NESTED_JSON = b'{"user":{"name":"alice","profile":{"theme":"dark","visits":[{"page":"home","count":5},{"page":"about","count":2}]}}}'
+NESTED_JSON = b'{"user":{"name":"alice","profile":{"theme":"dark","visits":[{"page":"home","count":5},{"page":"about","count":2}]}}}'  # noqa
 NESTED_DICT = {
     "user": {
         "name": "alice",
@@ -87,7 +94,7 @@ class _WithDeserialize(HookStruct):
     tags: list[str]
 
     @deserialize("name")
-    def _clean_name(cls, v: str) -> str:
+    def _clean_name(self, v: str) -> str:
         return v.strip().title()
 
 
@@ -99,7 +106,7 @@ class _WithValidate(HookStruct):
     tags: list[str]
 
     @validate("age")
-    def _check_age(cls, v: int) -> int:
+    def _check_age(self, v: int) -> int:
         if v < 0:
             raise ValueError(f"invalid age: {v}")
         return v
@@ -143,11 +150,11 @@ class _WithAll(HookStruct):
         return v.upper()
 
     @deserialize("name")
-    def _clean_name(cls, v: str) -> str:
+    def _clean_name(self, v: str) -> str:
         return v.strip().title()
 
     @validate("age")
-    def _check_age(cls, v: int) -> int:
+    def _check_age(self, v: int) -> int:
         if v < 0:
             raise ValueError(f"invalid age: {v}")
         return v
@@ -361,12 +368,11 @@ def run_benchmarks(
 
 def run_dotdict_access() -> None:
     """Benchmark dot-access vs bracket-access on a nested DotDict."""
-    d = _dotdict_instance()
     number = 1_000_000
     repeat = REPEAT
 
     print(f"\n{'=' * 60}")
-    print(f"  DotDict attribute vs bracket access")
+    print("  DotDict attribute vs bracket access")
     print(f"  ({number:,} iterations, best of {repeat} repeats)")
     print(f"{'=' * 60}")
     print(f"{'':<34} {'ops/sec':>12} {'vs bracket':>10}")

@@ -16,6 +16,25 @@ _DICT_METHODS: frozenset[str] = frozenset(
 )
 
 
+def _wrap_value(value: Any) -> Any:
+    """Wrap a single value for insertion into a DotDict.
+
+    Plain dicts become ``DotDict``; lists are scanned for dict items to wrap.
+    All other values (including existing ``DotDict`` instances) are returned
+    unchanged.
+    """
+    if type(value) is dict:
+        return DotDict(value)
+
+    if type(value) is list:
+        # Avoid an unnecessary list copy when no items need wrapping.
+        for item in value:
+            if type(item) is dict:
+                return [DotDict(item) if type(item) is dict else item for item in value]
+        return value  # no dict items — return as-is
+    return value
+
+
 class DotDict[K, V](dict[K, V]):
     """A :class:`dict` subclass with attribute-style access to keys.
 
@@ -35,26 +54,28 @@ class DotDict[K, V](dict[K, V]):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._wrap_nested()
+        # Start empty and insert each item through _wrap_value so nested
+        # dicts are wrapped exactly once — no separate _wrap_nested pass.
+        dict.__init__(self)
 
-    def _wrap_nested(self) -> None:
-        """Recursively wrap nested dicts and lists of dicts in-place."""
-        # Use dict.items() directly to avoid triggering the collision
-        # check when the wrapped data happens to contain an "items" key.
-        for key, value in dict.items(self):
-            if isinstance(value, dict) and not isinstance(value, DotDict):
-                super().__setitem__(key, DotDict(value))  # type: ignore
-            elif isinstance(value, list):
-                super().__setitem__(
-                    key,
-                    [
-                        DotDict(item)
-                        if isinstance(item, dict) and not isinstance(item, DotDict)
-                        else item
-                        for item in value
-                    ],  # type: ignore
-                )
+        if args:
+            if len(args) > 1:
+                raise TypeError(f"DotDict expected at most 1 argument, got {len(args)}")
+
+            source = args[0]  # type: ignore
+
+            if isinstance(source, dict):
+                # Use dict.items() directly so a DotDict source whose data
+                # happens to contain an "items" key still works.
+                for key, value in dict.items(source):
+                    dict.__setitem__(self, key, _wrap_value(value))
+
+            else:
+                for key, value in source:
+                    dict.__setitem__(self, key, _wrap_value(value))
+
+        for key, value in kwargs.items():
+            dict.__setitem__(self, key, _wrap_value(value))
 
     def __getattribute__(self, key: str) -> Any:
         """Intercept attribute access to detect dict-method / data-key collisions.
@@ -81,36 +102,20 @@ class DotDict[K, V](dict[K, V]):
         return super().__getitem__(key)
 
     def __setitem__(self, key: K, value: V) -> None:
-        if isinstance(value, dict) and not isinstance(value, DotDict):
-            value = DotDict(value)  # type: ignore
-        elif isinstance(value, list):
-            value = [  # type: ignore
-                DotDict(item) if isinstance(item, dict) and not isinstance(item, DotDict) else item
-                for item in value
-            ]
-        super().__setitem__(key, value)
+        super().__setitem__(key, _wrap_value(value))
 
     def __getattr__(self, key: K) -> V:
+        # __getattribute__ raises AttributeError for colliding keys, which
+        # makes CPython fall through to __getattr__.  We must re-raise the
+        # collision error so it isn't masked by the generic message.
         if key in _DICT_METHODS and key in self:
             raise AttributeError(
                 f"Key {key!r} collides with a built-in dict method. Use bracket access: d[{key!r}]."
             )
-
-        try:
-            return self[key]
-        except KeyError:
-            raise AttributeError(f"'DotDict' object has no attribute '{key}'") from None
+        raise AttributeError(f"'DotDict' object has no attribute '{key}'") from None
 
     def __setattr__(self, key: K, value: V) -> None:
-        if isinstance(value, dict) and not isinstance(value, DotDict):
-            self[key] = DotDict(value)  # type: ignore
-        elif isinstance(value, list):
-            self[key] = [  # type: ignore
-                DotDict(item) if isinstance(item, dict) and not isinstance(item, DotDict) else item
-                for item in value
-            ]
-        else:
-            self[key] = value
+        self[key] = _wrap_value(value)
 
     def __delattr__(self, key: K) -> None:
         try:

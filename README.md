@@ -111,17 +111,17 @@ each feature.  Models without hooks, computed fields, or excluded fields take th
 
 | Operation | Scenario | ops/sec | vs msgspec |
 |-----------|----------|---------|------------|
-| **encode** | msgspec.Struct (baseline) | 6,888,476 | 1.00x |
-| | HookStruct fast path | 5,580,996 | 0.81x |
-| | + serialize, computed, excluded | 1,082,017 | 0.16x |
-| **decode** | msgspec.Struct (baseline) | 3,765,011 | 1.00x |
-| | HookStruct fast path | 3,312,108 | 0.88x |
-| | + deserialize + validate hooks | 772,447 | 0.21x |
-| **convert** | msgspec.Struct (baseline) | 5,059,820 | 1.00x |
-| | HookStruct fast path | 3,431,685 | 0.68x |
-| | + deserialize + validate hooks | 1,101,510 | 0.22x |
-| **DotDict** | `msgspec.json.decode(raw, type=dict)` | 646,672 | 1.00x |
-| | `DotDict.decode(raw)` | 170,921 | 0.26x |
+| **encode** | msgspec.Struct (baseline) | 6,578,363 | 1.00x |
+| | HookStruct fast path | 5,382,363 | 0.82x |
+| | + serialize, computed, excluded | 1,093,827 | 0.17x |
+| **decode** | msgspec.Struct (baseline) | 3,774,404 | 1.00x |
+| | HookStruct fast path | 3,346,922 | 0.89x |
+| | + deserialize + validate hooks | 789,520 | 0.21x |
+| **convert** | msgspec.Struct (baseline) | 5,107,083 | 1.00x |
+| | HookStruct fast path | 3,506,785 | 0.69x |
+| | + deserialize + validate hooks | 1,124,963 | 0.22x |
+| **DotDict** | `msgspec.json.decode(raw, type=dict)` | 643,929 | 1.00x |
+| | `DotDict.decode(raw)` | 208,297 | 0.32x |
 
 > Run the benchmarks locally: `python benchmarks/bench.py`.  The fast path
 > (no hooks, computed, or excluded fields) stays within ~20% of raw msgspec.
