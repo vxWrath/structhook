@@ -78,6 +78,15 @@ class TestBasicModel:
         s = Simple(name="Alice", age=30)
         assert s.dump(include=["name", "missing"]) == {"name": "Alice"}
 
+    def test_dump_include_and_exclude_mutually_exclusive(self) -> None:
+        s = Simple(name="Alice", age=30)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            s.dump(include=["name"], exclude=["age"])
+
+    def test_dump_exclude(self) -> None:
+        s = Simple(name="Alice", age=30)
+        assert s.dump(exclude=["age"]) == {"name": "Alice"}
+
     def test_getitem(self) -> None:
         s = Simple(name="Alice", age=30)
         assert s["name"] == "Alice"

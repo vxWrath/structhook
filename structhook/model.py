@@ -698,13 +698,22 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
             dates, UUIDs, etc. are rendered as their JSON string forms.
         include:
             If provided, return only the named fields (dropping any that
-            aren't present).
+            aren't present).  Mutually exclusive with *exclude*.
         exclude:
-            If provided, return all fields except the named ones.
+            If provided, return all fields except the named ones.  Mutually
+            exclusive with *include*.
         fire_hooks:
             If ``False``, skip serialize hooks.  Excluded and computed fields
             are still processed.  Defaults to ``True``.
+
+        Raises
+        ------
+        ValueError
+            If both *include* and *exclude* are provided.
         """
+        if include is not None and exclude is not None:
+            raise ValueError("include and exclude are mutually exclusive")
+
         data = self.__class__.__to_builtins_func__(self, fire_hooks=fire_hooks)
 
         if mode == "json":
