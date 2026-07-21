@@ -611,7 +611,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
         .. warning::
 
             This hook fires for **every** object msgspec cannot natively
-            encode.  Keep it fast and side-effect-free — do not mutate the
+            encode.  Keep it fast and side-effect-free - do not mutate the
             object or its attributes.
         """
         if isinstance(obj, DotDict):
@@ -658,7 +658,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
         .. warning::
 
             This hook fires for **every** type msgspec cannot natively
-            decode.  Keep it fast and side-effect-free — do not mutate
+            decode.  Keep it fast and side-effect-free - do not mutate
             the input object.
         """
         origin = get_origin(typ) or typ
@@ -683,7 +683,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
     def __delitem__(self, key: str) -> None:
         """Cannot delete fields from a struct.
 
-        Raises :class:`TypeError` unconditionally — struct fields are
+        Raises :class:`TypeError` unconditionally - struct fields are
         immutable by design.  Use :meth:`copy` to create a new instance
         with different field values instead.
         """

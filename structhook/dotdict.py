@@ -162,7 +162,7 @@ def _make_dict_override(name: str) -> Any:
     """Create a method override that delegates to ``dict.name``.
 
     The override exists so that :meth:`DotDict.__getattribute__` is reached
-    during attribute lookup — native C-level method descriptors on ``dict``
+    during attribute lookup - native C-level method descriptors on ``dict``
     bypass it.  With the override in place, data keys that collide with a
     dict method name raise :class:`AttributeError` at access time.
     """

@@ -241,7 +241,7 @@ class TestEdgeCases:
         d[1] = "one"  # type: ignore
         assert d[1] == "one"
         # getattr() with a non-string arg raises TypeError before __getattr__
-        # is even called, so there's no way to test "d.1" — it's a syntax error.
+        # is even called, so there's no way to test "d.1" - it's a syntax error.
 
     def test_setattr_plain_value_after_nested(self) -> None:
         d = DotDict()

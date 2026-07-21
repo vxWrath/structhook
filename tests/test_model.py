@@ -838,7 +838,7 @@ class TestMsgspecEncHookOverride:
 
             @staticmethod
             def msgspec_enc_hook(obj: Any) -> Any:
-                # Child doesn't handle CustomType — delegates to Parent
+                # Child doesn't handle CustomType - delegates to Parent
                 return Parent.msgspec_enc_hook(obj)
 
         m = Child(data=CustomType("hello"))
@@ -904,7 +904,7 @@ class TestMsgspecDecHookOverride:
                 return HookStruct.msgspec_dec_hook(typ, obj)
 
         class Child(Parent):
-            # No override — inherits Parent's hook.  Should still decode
+            # No override - inherits Parent's hook.  Should still decode
             # DotDict fields correctly via the base implementation.
             config: DotDict = field(default_factory=DotDict)
 
