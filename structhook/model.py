@@ -293,6 +293,14 @@ class HookStructMeta(StructMeta):
             ):
                 computed_fields.append(key)
 
+        # --- inherit parent field metadata ---------------------------------
+
+        parent_fields: dict[str, Field] = {}
+        for base in bases:
+            for field_name, field in getattr(base, "__fields__", {}).items():
+                if field_name not in parent_fields:
+                    parent_fields[field_name] = field
+
         # Propagate kw_only and dict from parent HookStruct subclasses.
         # msgspec does not expose these in __struct_config__, so we track
         # them ourselves via __kw_only__ / __dict__ sentinel attributes.
@@ -330,6 +338,7 @@ class HookStructMeta(StructMeta):
                 default = default_obj
 
             if not any(key == field_name for key, _ in fields):
+                parent_field = parent_fields.get(field_name)
                 fields.insert(
                     i,
                     (
@@ -338,9 +347,30 @@ class HookStructMeta(StructMeta):
                             default=default,
                             default_factory=default_factory,
                             name=field_name,
+                            exclude=parent_field.exclude if parent_field else False,
+                            extra=parent_field.extra if parent_field else None,
                         ),
                     ),
                 )
+
+        # --- inherit parent hooks & computed fields ------------------------
+
+        for base in bases:
+            for stage in Stage:
+                base_hooks: dict[str, list[Callable[..., Any]]] = getattr(
+                    base, f"__{stage.value}_hooks__", {}
+                )
+                for hook_field, funcs in base_hooks.items():
+                    existing = hooks[stage].setdefault(hook_field, [])
+                    for func in funcs:
+                        if func not in existing:
+                            existing.insert(0, func)
+
+            for cf in getattr(base, "__computed_fields__", ()):
+                if cf not in computed_fields:
+                    computed_fields.insert(0, cf)
+
+        # ------------------------------------------------------------------
 
         all_fields = dict(fields)
         computed_fields_tuple = tuple(computed_fields)

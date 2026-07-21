@@ -479,6 +479,149 @@ class TestInheritance:
 
 
 # ---------------------------------------------------------------------------
+# Inherited hooks and computed fields
+# ---------------------------------------------------------------------------
+
+
+class ParentWithComputed(HookStruct):
+    name: str
+
+    @computed_field
+    def loud(self) -> str:
+        return self.name.upper()
+
+
+class ChildOfComputed(ParentWithComputed):
+    age: int = 0
+
+
+class TestInheritedComputed:
+    def test_child_inherits_computed(self) -> None:
+        c = ChildOfComputed(name="bob")
+        assert "loud" in c.dump()
+        assert c.dump()["loud"] == "BOB"
+
+    def test_child_computed_fields_attr(self) -> None:
+        assert "loud" in ChildOfComputed.__computed_fields__
+
+    def test_grandchild_inherits_computed(self) -> None:
+        class GrandChild(ChildOfComputed):
+            extra: str = ""
+
+        gc = GrandChild(name="eve")
+        assert gc.dump()["loud"] == "EVE"
+
+
+class ParentWithSerialize(HookStruct):
+    name: str
+
+    @serialize("name")
+    def _upper(self, v: str) -> str:
+        return v.upper()
+
+
+class ChildOfSerialize(ParentWithSerialize):
+    pass
+
+
+class TestInheritedSerialize:
+    def test_child_encode_fires_parent_hook(self) -> None:
+        c = ChildOfSerialize(name="alice")
+        assert c.encode() == b'{"name":"ALICE"}'
+
+    def test_child_dump_fires_parent_hook(self) -> None:
+        c = ChildOfSerialize(name="alice")
+        assert c.dump()["name"] == "ALICE"
+
+    def test_child_dump_no_hooks_still_works(self) -> None:
+        c = ChildOfSerialize(name="alice")
+        assert c.dump(fire_hooks=False)["name"] == "alice"
+
+
+class ParentWithDeserialize(HookStruct):
+    name: str
+
+    @deserialize("name")
+    def _clean(self, v: str) -> str:
+        return v.strip().title()
+
+
+class ChildOfDeserialize(ParentWithDeserialize):
+    pass
+
+
+class TestInheritedDeserialize:
+    def test_child_decode_applies_parent_hook(self) -> None:
+        c = ChildOfDeserialize.decode(b'{"name":"  alice  "}')
+        assert c.name == "Alice"
+
+    def test_child_convert_applies_parent_hook(self) -> None:
+        c = ChildOfDeserialize.convert({"name": "  bob  "})
+        assert c.name == "Bob"
+
+
+class ParentWithValidate(HookStruct):
+    score: int
+
+    @validate("score")
+    def _clamp(self, v: int) -> int:
+        return max(0, min(v, 100))
+
+
+class ChildOfValidate(ParentWithValidate):
+    pass
+
+
+class TestInheritedValidate:
+    def test_child_decode_applies_parent_hook(self) -> None:
+        c = ChildOfValidate.convert({"score": 200})
+        assert c.score == 100
+
+    def test_child_convert_applies_parent_hook(self) -> None:
+        c = ChildOfValidate.convert({"score": -10})
+        assert c.score == 0
+
+
+class HookOrderParent(HookStruct):
+    x: int = 0
+
+    @validate("x")
+    def _parent_hook(self, v: int) -> int:
+        return v * 2
+
+
+class HookOrderChild(HookOrderParent):
+    @validate("x")
+    def _child_hook(self, v: int) -> int:
+        return v + 1
+
+
+class TestHookOrderingInheritance:
+    def test_parent_runs_before_child(self) -> None:
+        m = HookOrderChild.convert({"x": 5})
+        assert m.x == 11  # (5 * 2) + 1
+
+
+class ParentFieldMeta(HookStruct):
+    secret: str = field(exclude=True, default="shh")
+    tagged: str = field(extra={"doc": "The tag"}, default="")
+
+
+class ChildFieldMeta(ParentFieldMeta):
+    pass
+
+
+class TestInheritedFieldMeta:
+    def test_exclude_inherited(self) -> None:
+        assert ChildFieldMeta.__fields__["secret"].exclude is True
+        c = ChildFieldMeta(secret="xyz")
+        assert "secret" not in c.dump()
+
+    def test_extra_inherited(self) -> None:
+        assert ChildFieldMeta.__fields__["tagged"].extra == {"doc": "The tag"}
+
+
+# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 
