@@ -103,6 +103,32 @@ JSON blobs get decoded to `DotDict` automatically (see above).
 - **HookStruct integration** - use `DotDict` as a field type and arbitrary JSON is decoded automatically.
 - **Collision detection** - accessing a key that collides with a built-in `dict` method (e.g. `d.keys` when the data has a `"keys"` key) raises `AttributeError` with a clear message.
 
+## Benchmarks
+
+structhook is benchmarked against raw `msgspec.Struct` to measure the overhead of
+each feature.  Models without hooks, computed fields, or excluded fields take the
+**fast path** — they use msgspec's native encode/decode with only a thin wrapper.
+
+| Operation | Scenario | ops/sec | vs msgspec |
+|-----------|----------|---------|------------|
+| **encode** | msgspec.Struct (baseline) | 6,888,476 | 1.00x |
+| | HookStruct fast path | 5,580,996 | 0.81x |
+| | + serialize, computed, excluded | 1,082,017 | 0.16x |
+| **decode** | msgspec.Struct (baseline) | 3,765,011 | 1.00x |
+| | HookStruct fast path | 3,312,108 | 0.88x |
+| | + deserialize + validate hooks | 772,447 | 0.21x |
+| **convert** | msgspec.Struct (baseline) | 5,059,820 | 1.00x |
+| | HookStruct fast path | 3,431,685 | 0.68x |
+| | + deserialize + validate hooks | 1,101,510 | 0.22x |
+| **DotDict** | `msgspec.json.decode(raw, type=dict)` | 646,672 | 1.00x |
+| | `DotDict.decode(raw)` | 170,921 | 0.26x |
+
+> Run the benchmarks locally: `python benchmarks/bench.py`.  The fast path
+> (no hooks, computed, or excluded fields) stays within ~20% of raw msgspec.
+> Features like serialize hooks, computed fields, and excluded fields each
+> add a proportional amount of Python work on top of msgspec's C
+> implementation — you only pay for what you use.
+
 ## Install
 
 ```bash

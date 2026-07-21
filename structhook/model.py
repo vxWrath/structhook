@@ -29,6 +29,7 @@ from typing import (
     Protocol,
     Self,
     dataclass_transform,
+    get_args,
     get_origin,
 )
 
@@ -252,6 +253,29 @@ def computed_field(func: Callable[..., Any]) -> property:
 
 
 # ---------------------------------------------------------------------------
+# Helpers for detecting DotDict in type annotations
+# ---------------------------------------------------------------------------
+
+
+def _type_involves_dotdict(tp: Any) -> bool:
+    """Recursively check if a type annotation involves :class:`DotDict`."""
+    if tp is None:
+        return False
+
+    origin = get_origin(tp)
+    if origin is not None:
+        return any(_type_involves_dotdict(arg) for arg in get_args(tp))
+
+    try:
+        if isinstance(tp, type) and issubclass(tp, DotDict):
+            return True
+    except TypeError:
+        pass
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Metaclass
 # ---------------------------------------------------------------------------
 
@@ -400,49 +424,140 @@ class HookStructMeta(StructMeta):
         )
         cls.__has_decode_features__ = bool(cls.__deserialize_hooks__ or cls.__validate_hooks__)  # type: ignore
 
+        # Collect type hints across the MRO once (Python __annotations__
+        # are not inherited, so we must walk parent classes).
+        _hints: dict[str, Any] = {}
+        for _base in cls.__mro__:
+            for _key, _val in getattr(_base, "__annotations__", {}).items():
+                _hints.setdefault(_key, _val)
+
+        # --- detect whether enc_hook is actually needed ----------------------
+
+        _needs_enc_hook = False
+        for _base in cls.__mro__:
+            if _base.__module__ == __name__ and _base.__qualname__ == "HookStruct":
+                break
+            if "msgspec_enc_hook" in _base.__dict__:
+                _needs_enc_hook = True
+                break
+
+        if not _needs_enc_hook:
+            for _fn in cls.__struct_fields__:
+                if _type_involves_dotdict(_hints.get(_fn)):
+                    _needs_enc_hook = True
+                    break
+
+        cls.__needs_enc_hook__ = _needs_enc_hook  # type: ignore
+
+        # --- detect whether dec_hook is actually needed ----------------------
+
+        _needs_dec_hook = False
+        for _base in cls.__mro__:
+            if _base.__module__ == __name__ and _base.__qualname__ == "HookStruct":
+                break
+            if "msgspec_dec_hook" in _base.__dict__:
+                _needs_dec_hook = True
+                break
+
+        if not _needs_dec_hook:
+            for _fn in cls.__struct_fields__:
+                if _type_involves_dotdict(_hints.get(_fn)):
+                    _needs_dec_hook = True
+                    break
+
+        cls.__needs_dec_hook__ = _needs_dec_hook  # type: ignore
+
         # --- build per-class encoder / decoders -------------------------------
 
-        # Each class gets its own encoder and decoders so that subclasses can
+        # Each class gets its own encoder and decoder so that subclasses can
         # override msgspec_enc_hook / msgspec_dec_hook.
-        _encoder = json.Encoder(enc_hook=cls.msgspec_enc_hook)  # type: ignore
-        _dict_decoder = json.Decoder(dict, dec_hook=cls.msgspec_dec_hook)  # type: ignore
-        _typed_decoder = json.Decoder(cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
+        _encoder = json.Encoder(
+            enc_hook=cls.msgspec_enc_hook if _needs_enc_hook else None  # type: ignore
+        )
+        _dict_decoder = json.Decoder(
+            dict,
+            dec_hook=cls.msgspec_dec_hook if _needs_dec_hook else None,  # type: ignore
+        )
+        _typed_decoder = json.Decoder(
+            cls,
+            dec_hook=cls.msgspec_dec_hook if _needs_dec_hook else None,  # type: ignore
+        )
         cls.__json_encoder__ = _encoder  # type: ignore
 
         # --- build _to_builtins / _encode -----------------------------------
 
         if not cls.__has_encode_features__:  # type: ignore
 
-            def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
-                return msgspec.to_builtins(self, enc_hook=type(self).msgspec_enc_hook)
+            if _needs_enc_hook:
+
+                def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
+                    return msgspec.to_builtins(self, enc_hook=type(self).msgspec_enc_hook)
+
+            else:
+
+                def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
+                    return msgspec.to_builtins(self)
 
             def _encode(self: HookStruct) -> bytes:
                 # Fast path: encode the Struct directly - no intermediate dict.
                 return _encoder.encode(self)
 
         else:
-            _encode_excluded_fields = cls.__excluded_fields__  # type: ignore
-            _encode_computed_fields = cls.__computed_fields__  # type: ignore
-            _encode_serialize_hooks = cls.__serialize_hooks__  # type: ignore
+            # Pre-compute encoding schema: flat list of (field_name, hooks).
+            # Struct fields (non-excluded) first, then computed fields.
+            _encode_schema: list[tuple[str, tuple[Callable[..., Any], ...]]] = []
+            _excluded = cls.__excluded_fields__  # type: ignore
+            _ser_hooks = cls.__serialize_hooks__  # type: ignore
+            for _fn in cls.__struct_fields__:
+                if _fn not in _excluded:
+                    _encode_schema.append((_fn, tuple(_ser_hooks.get(_fn, ()))))
+            for _fn in computed_fields_tuple:
+                _encode_schema.append((_fn, ()))
 
-            def _to_builtins(self: HookStruct, fire_hooks: bool = True) -> dict[str, Any]:
-                data: dict[str, Any] = msgspec.to_builtins(
-                    self, enc_hook=type(self).msgspec_enc_hook
-                )
+            if _needs_enc_hook:
+                # DotDict or custom enc_hook present — use to_builtins for
+                # correct enc_hook dispatch on field values.
 
-                for field in _encode_excluded_fields:
-                    data.pop(field, None)
+                def _to_builtins(
+                    self: HookStruct, fire_hooks: bool = True
+                ) -> dict[str, Any]:
+                    data: dict[str, Any] = msgspec.to_builtins(
+                        self, enc_hook=type(self).msgspec_enc_hook
+                    )
 
-                for field in _encode_computed_fields:
-                    data[field] = getattr(self, field)
+                    for field in _excluded:
+                        data.pop(field, None)
 
-                if fire_hooks:
-                    for field, funcs in _encode_serialize_hooks.items():
-                        if field in data:
-                            for func in funcs:
-                                data[field] = func(self, data[field])
+                    for field in computed_fields_tuple:
+                        data[field] = getattr(self, field)
 
-                return data
+                    if fire_hooks:
+                        for field, funcs in _ser_hooks.items():
+                            if field in data:
+                                for func in funcs:
+                                    data[field] = func(self, data[field])
+
+                    return data
+
+            else:
+                # No DotDict, no custom hook — build dict from scratch.
+                # This is faster than to_builtins + pop + add because it
+                # avoids an intermediate dict and does one pass.
+
+                def _to_builtins(
+                    self: HookStruct, fire_hooks: bool = True
+                ) -> dict[str, Any]:
+                    data: dict[str, Any] = {}
+                    if fire_hooks:
+                        for fn, hooks in _encode_schema:
+                            v = getattr(self, fn)
+                            for h in hooks:
+                                v = h(self, v)
+                            data[fn] = v
+                    else:
+                        for fn, hooks in _encode_schema:
+                            data[fn] = getattr(self, fn)
+                    return data
 
             def _encode(self: HookStruct) -> bytes:
                 return _encoder.encode(_to_builtins(self))
@@ -465,41 +580,93 @@ class HookStructMeta(StructMeta):
             def _decode(raw: bytes) -> HookStruct:
                 return _typed_decoder.decode(raw)
 
-            def _convert(data: DictLike) -> HookStruct:
-                # Fast path: no hooks - convert directly.
-                return msgspec.convert(data, cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
+            if _needs_dec_hook:
+
+                def _convert(data: DictLike) -> HookStruct:
+                    # Fast path: no hooks - convert directly with dec_hook.
+                    return msgspec.convert(
+                        data,
+                        cls,
+                        dec_hook=cls.msgspec_dec_hook,  # type: ignore
+                    )
+
+            else:
+
+                def _convert(data: DictLike) -> HookStruct:
+                    # Fast path: no hooks, no dec_hook - convert directly.
+                    return msgspec.convert(data, cls)  # type: ignore
 
         else:
             _decode_deserialize_hooks = cls.__deserialize_hooks__  # type: ignore
             _decode_validate_hooks = cls.__validate_hooks__  # type: ignore
 
-            def _decode(raw: bytes) -> HookStruct:
-                data: dict[str, Any] = _dict_decoder.decode(raw)
+            if _needs_dec_hook:
 
-                for field, funcs in _decode_deserialize_hooks.items():
-                    if field in data:
+                def _decode(raw: bytes) -> HookStruct:
+                    data: dict[str, Any] = _dict_decoder.decode(raw)
+
+                    for field, funcs in _decode_deserialize_hooks.items():
+                        if field in data:
+                            for func in funcs:
+                                data[field] = func(cls, data[field])
+
+                    obj = msgspec.convert(
+                        data,
+                        cls,
+                        dec_hook=cls.msgspec_dec_hook,  # type: ignore
+                    )
+
+                    for field, funcs in _decode_validate_hooks.items():
                         for func in funcs:
-                            data[field] = func(cls, data[field])
+                            object.__setattr__(obj, field, func(cls, getattr(obj, field)))
 
-                obj = msgspec.convert(data, cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
+                    return obj
 
-                for field, funcs in _decode_validate_hooks.items():
-                    for func in funcs:
-                        object.__setattr__(obj, field, func(cls, getattr(obj, field)))
+                def _convert(data: DictLike) -> HookStruct:
+                    data_dict = dict(data)
 
-                return obj
+                    for field, funcs in _decode_deserialize_hooks.items():
+                        if field in data_dict:
+                            for func in funcs:
+                                data_dict[field] = func(cls, data_dict[field])
 
-            def _convert(data: DictLike) -> HookStruct:
-                data_dict = dict(data)
+                    return _shared_convert(
+                        msgspec.convert(
+                            data_dict,
+                            cls,
+                            dec_hook=cls.msgspec_dec_hook,  # type: ignore
+                        )
+                    )
 
-                for field, funcs in _decode_deserialize_hooks.items():
-                    if field in data_dict:
+            else:
+
+                def _decode(raw: bytes) -> HookStruct:
+                    data: dict[str, Any] = _dict_decoder.decode(raw)
+
+                    for field, funcs in _decode_deserialize_hooks.items():
+                        if field in data:
+                            for func in funcs:
+                                data[field] = func(cls, data[field])
+
+                    obj = msgspec.convert(data, cls)  # type: ignore
+
+                    for field, funcs in _decode_validate_hooks.items():
                         for func in funcs:
-                            data_dict[field] = func(cls, data_dict[field])
+                            object.__setattr__(obj, field, func(cls, getattr(obj, field)))
 
-                return _shared_convert(
-                    msgspec.convert(data_dict, cls, dec_hook=cls.msgspec_dec_hook)  # type: ignore
-                )
+                    return obj
+
+                def _convert(data: DictLike) -> HookStruct:
+                    data_dict = dict(data)
+
+                    for field, funcs in _decode_deserialize_hooks.items():
+                        if field in data_dict:
+                            for func in funcs:
+                                data_dict[field] = func(cls, data_dict[field])
+
+                    return _shared_convert(
+                        msgspec.convert(data_dict, cls)  # type: ignore
+                    )
 
         cls.__to_builtins_func__ = _to_builtins  # type: ignore
         cls.__encode_func__ = _encode  # type: ignore
@@ -562,6 +729,8 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
 
     __has_encode_features__: ClassVar[bool]
     __has_decode_features__: ClassVar[bool]
+    __needs_enc_hook__: ClassVar[bool]
+    __needs_dec_hook__: ClassVar[bool]
 
     __to_builtins_func__: ClassVar[Callable[..., dict[str, Any]]]
     __encode_func__: ClassVar[Callable[[Self], bytes]]
