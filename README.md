@@ -8,7 +8,7 @@ Extra field info, computed fields, and hooks for `msgspec.Struct` - plus a
 ### HookStruct - schema-aware models with hooks
 
 ```python
-from structhook import HookStruct, DotDict, field, serialize, deserialize, validate, computed_field
+from structhook import HookStruct, DotDict, field, pre_unload, pre_load, post_load, computed_field
 
 class User(HookStruct):
     name: str
@@ -21,22 +21,23 @@ class User(HookStruct):
     def display_name(self) -> str:
         return self.name.title()
 
-    @deserialize("email")
+    @pre_load("email")
+    @classmethod
     def _clean_email(cls, v: str) -> str:
         return v.strip().lower()
 
-    @validate("role")
-    def _check_role(cls, v: str) -> str:
+    @post_load("role")
+    def _check_role(self, v: str) -> str:
         if v not in ("admin", "user", "guest"):
             raise ValueError(f"unknown role: {v}")
         return v
 
-    @serialize("name")
+    @pre_unload("name")
     def _upper_name(self, v: str) -> str:
         return v.upper()
 ```
 
-Deserialize and validate hooks fire during `decode()` / `convert()`:
+Pre-load and post-load hooks fire during `decode()` / `convert()`:
 
 ```pycon
 >>> user = User.decode(b'{"name":"alice","email":" ALICE@EXAMPLE.COM ","metadata":{"plan":"pro"}}')
@@ -88,7 +89,7 @@ JSON blobs get decoded to `DotDict` automatically (see above).
 ## Features
 
 ### HookStruct
-- **Lifecycle hooks** - `@serialize`, `@deserialize`, `@validate` decorators run per-field transforms during encode/decode.
+- **Lifecycle hooks** - `@pre_unload`, `@pre_load`, `@post_load` decorators run per-field transforms during encode/decode.
 - **Computed fields** - `@computed_field` for read-only derived values in serialized output.
 - **Field exclusion** - `field(exclude=True)` keeps secrets out of `encode()` / `dump()`.
 - **Controlled output** - `dump()` supports `include` / `exclude` filtering, `fire_hooks` toggle, JSON and Python modes.
@@ -113,19 +114,19 @@ each feature.  Models without hooks, computed fields, or excluded fields take th
 |-----------|----------|---------|------------|
 | **encode** | msgspec.Struct (baseline) | 6,578,363 | 1.00x |
 | | HookStruct fast path | 5,382,363 | 0.82x |
-| | + serialize, computed, excluded | 1,093,827 | 0.17x |
+| | + pre_unload, computed, excluded | 1,093,827 | 0.17x |
 | **decode** | msgspec.Struct (baseline) | 3,774,404 | 1.00x |
 | | HookStruct fast path | 3,346,922 | 0.89x |
-| | + deserialize + validate hooks | 789,520 | 0.21x |
+| | + pre_load + post_load hooks | 789,520 | 0.21x |
 | **convert** | msgspec.Struct (baseline) | 5,107,083 | 1.00x |
 | | HookStruct fast path | 3,506,785 | 0.69x |
-| | + deserialize + validate hooks | 1,124,963 | 0.22x |
+| | + pre_load + post_load hooks | 1,124,963 | 0.22x |
 | **DotDict** | `msgspec.json.decode(raw, type=dict)` | 643,929 | 1.00x |
 | | `DotDict.decode(raw)` | 208,297 | 0.32x |
 
 > Run the benchmarks locally: `python benchmarks/bench.py`.  The fast path
 > (no hooks, computed, or excluded fields) stays within ~20% of raw msgspec.
-> Features like serialize hooks, computed fields, and excluded fields each
+> Features like pre_unload hooks, computed fields, and excluded fields each
 > add a proportional amount of Python work on top of msgspec's C
 > implementation — you only pay for what you use.
 
@@ -145,11 +146,11 @@ Subclass of `msgspec.Struct` with `kw_only=True`, `dict=True`.
 
 | Method | Description |
 |--------|-------------|
-| `encode() -> bytes` | Encode to JSON bytes (always fires serialize hooks). |
+| `encode() -> bytes` | Encode to JSON bytes (always fires pre_unload hooks). |
 | `dump(mode, include, exclude, fire_hooks)` | Convert to plain dict (or JSON-roundtripped dict). |
 | `to_positional(mode, include, exclude, fire_hooks, computed)` | Return a tuple of values in declaration order (ideal for SQL positional parameters). |
-| `decode(raw) -> Self` | Decode JSON bytes/string into a model (fires deserialize + validate hooks). |
-| `convert(data) -> Self` | Convert a dict-like object into a model (fires deserialize + validate hooks). |
+| `decode(raw) -> Self` | Decode JSON bytes/string into a model (fires pre_load + post_load hooks). |
+| `convert(data) -> Self` | Convert a dict-like object into a model (fires pre_load + post_load hooks). |
 | `copy(**changes) -> Self` | Shallow copy with field replacements. |
 
 ### `field(**options)`
@@ -161,22 +162,23 @@ Drop-in replacement for `msgspec.field` with two extra options:
 | `exclude` | `bool` | Exclude from `encode()` / `dump()` output. |
 | `extra` | `Any` | User-defined metadata (for code-gen, OpenAPI, etc.). |
 
-### `@serialize(fields)`
+### `@pre_unload(fields)`
 
 Runs **after** computed/excluded processing, **before** JSON encoding.  
 Signature: `(self, value) -> new_value`
 
-### `@deserialize(fields)`
+### `@pre_load(fields)`
 
 Runs on raw JSON dict **before** struct conversion, during `decode()` / `convert()`.  
+**Must be paired with `@classmethod` directly below** — the first argument is the model class.  
 Signature: `(cls, raw_value) -> new_value`
 
-### `@validate(fields)`
+### `@post_load(fields)`
 
 Runs **after** struct conversion, during `decode()` / `convert()`. The value is already type-coerced.  
-Signature: `(cls, value) -> new_value`
+Signature: `(self, value) -> new_value`
 
-> **Warning:** Validate hooks mutate the model post-construction via `object.__setattr__` and are incompatible with `frozen=True`.
+> **Warning:** Post-load hooks mutate the model post-construction via `object.__setattr__` and are incompatible with `frozen=True`.
 
 ### `@computed_field`
 

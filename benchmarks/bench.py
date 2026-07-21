@@ -1,7 +1,7 @@
 """Micro-benchmarks comparing structhook against raw msgspec.
 
 Measures the overhead structhook adds per operation (encode, decode, dump, convert)
-across its feature set: fast path, serialize/deserialize/validate hooks,
+across its feature set: fast path, pre_unload/pre_load/post_load hooks,
 computed fields, and excluded fields.
 
 Usage::
@@ -17,10 +17,10 @@ from structhook import (
     DotDict,
     HookStruct,
     computed_field,
-    deserialize,
     field,
-    serialize,
-    validate,
+    post_load,
+    pre_load,
+    pre_unload,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,38 +74,39 @@ class _FastPath(HookStruct):
     tags: list[str]
 
 
-class _WithSerialize(HookStruct):
+class _WithPreUnload(HookStruct):
     name: str
     age: int
     score: float
     active: bool
     tags: list[str]
 
-    @serialize("name")
+    @pre_unload("name")
     def _upper_name(self, v: str) -> str:
         return v.upper()
 
 
-class _WithDeserialize(HookStruct):
+class _WithPreLoad(HookStruct):
     name: str
     age: int
     score: float
     active: bool
     tags: list[str]
 
-    @deserialize("name")
-    def _clean_name(self, v: str) -> str:
+    @pre_load("name")
+    @classmethod
+    def _clean_name(cls, v: str) -> str:
         return v.strip().title()
 
 
-class _WithValidate(HookStruct):
+class _WithPostLoad(HookStruct):
     name: str
     age: int
     score: float
     active: bool
     tags: list[str]
 
-    @validate("age")
+    @post_load("age")
     def _check_age(self, v: int) -> int:
         if v < 0:
             raise ValueError(f"invalid age: {v}")
@@ -145,15 +146,16 @@ class _WithAll(HookStruct):
     def summary(self) -> str:
         return f"{self.name} ({self.age})"
 
-    @serialize("name")
+    @pre_unload("name")
     def _upper_name(self, v: str) -> str:
         return v.upper()
 
-    @deserialize("name")
-    def _clean_name(self, v: str) -> str:
+    @pre_load("name")
+    @classmethod
+    def _clean_name(cls, v: str) -> str:
         return v.strip().title()
 
-    @validate("age")
+    @post_load("age")
     def _check_age(self, v: int) -> int:
         if v < 0:
             raise ValueError(f"invalid age: {v}")
@@ -166,11 +168,11 @@ class _WithAll(HookStruct):
 
 _baseline = _MsgspecBaseline(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
 _fast = _FastPath(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
-_serialize = _WithSerialize(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
-_deserialize = _WithDeserialize(
+_unload = _WithPreUnload(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
+_pre_load = _WithPreLoad(
     name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"]
 )
-_validate = _WithValidate(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
+_post_load = _WithPostLoad(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
 _computed = _WithComputed(name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"])
 _excluded = _WithExcluded(
     name="alice", age=30, score=95.5, active=True, tags=["dev", "admin"], secret="hidden"
@@ -197,9 +199,9 @@ ENCODE_BENCHES: list[Benchmark] = [
         "__main__._fast.encode()",
     ),
     (
-        "+ serialize hook",
+        "+ pre_unload hook",
         "import __main__",
-        "__main__._serialize.encode()",
+        "__main__._unload.encode()",
     ),
     (
         "+ computed field",
@@ -230,14 +232,14 @@ DECODE_BENCHES: list[Benchmark] = [
         "__main__._FastPath.decode(__main__.PAYLOAD)",
     ),
     (
-        "+ deserialize hook",
+        "+ pre_load hook",
         "import __main__",
-        "__main__._WithDeserialize.decode(__main__.PAYLOAD)",
+        "__main__._WithPreLoad.decode(__main__.PAYLOAD)",
     ),
     (
-        "+ validate hook",
+        "+ post_load hook",
         "import __main__",
-        "__main__._WithValidate.decode(__main__.PAYLOAD)",
+        "__main__._WithPostLoad.decode(__main__.PAYLOAD)",
     ),
     (
         "+ both hooks",
@@ -258,9 +260,9 @@ DUMP_BENCHES: list[Benchmark] = [
         "__main__._fast.dump()",
     ),
     (
-        "+ serialize hook",
+        "+ pre_unload hook",
         "import __main__",
-        "__main__._serialize.dump()",
+        "__main__._unload.dump()",
     ),
     (
         "+ computed field",
@@ -291,14 +293,14 @@ CONVERT_BENCHES: list[Benchmark] = [
         "__main__._FastPath.convert(__main__.DATA)",
     ),
     (
-        "+ deserialize hook",
+        "+ pre_load hook",
         "import __main__",
-        "__main__._WithDeserialize.convert(__main__.DATA)",
+        "__main__._WithPreLoad.convert(__main__.DATA)",
     ),
     (
-        "+ validate hook",
+        "+ post_load hook",
         "import __main__",
-        "__main__._WithValidate.convert(__main__.DATA)",
+        "__main__._WithPostLoad.convert(__main__.DATA)",
     ),
     (
         "+ both hooks",

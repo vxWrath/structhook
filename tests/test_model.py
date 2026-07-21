@@ -11,10 +11,10 @@ from structhook import (
     HookStruct,
     Stage,
     computed_field,
-    deserialize,
     field,
-    serialize,
-    validate,
+    post_load,
+    pre_load,
+    pre_unload,
 )
 
 # ---------------------------------------------------------------------------
@@ -274,122 +274,134 @@ class TestComputedFields:
 
 
 # ---------------------------------------------------------------------------
-# Serialize hooks
+# Pre-unload hooks
 # ---------------------------------------------------------------------------
 
 
-class WithSerialize(HookStruct):
+class WithPreUnload(HookStruct):
     name: str
     count: int = 0
 
-    @serialize("name")
+    @pre_unload("name")
     def _upper_name(self, v: str) -> str:
         return v.upper()
 
 
-class TestSerializeHooks:
+class TestPreUnloadHooks:
     def test_encode_fires_hook(self) -> None:
-        m = WithSerialize(name="alice")
+        m = WithPreUnload(name="alice")
         assert m.encode() == b'{"name":"ALICE","count":0}'
 
     def test_dump_fires_hook_by_default(self) -> None:
-        m = WithSerialize(name="alice")
+        m = WithPreUnload(name="alice")
         assert m.dump()["name"] == "ALICE"
 
     def test_dump_fire_hooks_false(self) -> None:
-        m = WithSerialize(name="alice")
+        m = WithPreUnload(name="alice")
         assert m.dump(fire_hooks=False)["name"] == "alice"
 
     def test_dump_json_fire_hooks_false(self) -> None:
-        m = WithSerialize(name="alice")
+        m = WithPreUnload(name="alice")
         assert m.dump(mode="json", fire_hooks=False)["name"] == "alice"
 
 
-class WithMultiFieldSerialize(HookStruct):
+class WithMultiFieldPreUnload(HookStruct):
     a: str = ""
     b: str = ""
 
-    @serialize(["a", "b"])
+    @pre_unload(["a", "b"])
     def _upper(self, v: str) -> str:
         return v.upper()
 
 
-class TestMultiFieldSerialize:
+class TestMultiFieldPreUnload:
     def test_both_fields(self) -> None:
-        m = WithMultiFieldSerialize(a="hello", b="world")
+        m = WithMultiFieldPreUnload(a="hello", b="world")
         data = m.dump()
         assert data["a"] == "HELLO"
         assert data["b"] == "WORLD"
 
 
 # ---------------------------------------------------------------------------
-# Deserialize hooks
+# Pre-load hooks
 # ---------------------------------------------------------------------------
 
 
-class WithDeserialize(HookStruct):
+class WithPreLoad(HookStruct):
     name: str
     age: int = 0
 
-    @deserialize("name")
-    def _clean_name(self, v: str) -> str:
+    @pre_load("name")
+    @classmethod
+    def _clean_name(cls, v: str) -> str:
         return v.strip().title()
 
 
-class TestDeserializeHooks:
+class TestPreLoadHooks:
     def test_decode_applies(self) -> None:
-        m = WithDeserialize.decode(b'{"name":"  alice  "}')
+        m = WithPreLoad.decode(b'{"name":"  alice  "}')
         assert m.name == "Alice"
 
     def test_convert_applies(self) -> None:
-        m = WithDeserialize.convert({"name": "  bob  "})
+        m = WithPreLoad.convert({"name": "  bob  "})
         assert m.name == "Bob"
 
+    def test_requires_classmethod(self) -> None:
+        """pre_load raises TypeError if @classmethod is missing."""
+        with pytest.raises(TypeError, match="pre_load requires @classmethod"):
+
+            class _Bad(HookStruct):
+                name: str = ""
+
+                @pre_load("name")  # no @classmethod below
+                def _clean(cls, v: str) -> str:
+                    return v.strip()
+
 
 # ---------------------------------------------------------------------------
-# Validate hooks
+# Post-load hooks
 # ---------------------------------------------------------------------------
 
 
-class WithValidate(HookStruct):
+class WithPostLoad(HookStruct):
     score: int
 
-    @validate("score")
+    @post_load("score")
     def _check_score(self, v: int) -> int:
         if v < 0 or v > 100:
             raise ValueError(f"score {v} out of range 0-100")
         return v
 
 
-class TestValidateHooks:
+class TestPostLoadHooks:
     def test_valid(self) -> None:
-        m = WithValidate(score=50)
+        m = WithPostLoad(score=50)
         assert m.score == 50
 
     def test_invalid(self) -> None:
         with pytest.raises(ValueError, match="out of range"):
-            WithValidate.convert({"score": 150})
+            WithPostLoad.convert({"score": 150})
 
     def test_decode_applies(self) -> None:
-        m = WithValidate.decode(b'{"score":75}')
+        m = WithPostLoad.decode(b'{"score":75}')
         assert m.score == 75
 
 
-class ChainedValidate(HookStruct):
+class ChainedPostLoad(HookStruct):
     x: int = 0
 
-    @validate("x")
+    @post_load("x")
     def _double(self, v: int) -> int:
         return v * 2
 
-    @validate("x")
+    @post_load("x")
     def _add_one(self, v: int) -> int:
         return v + 1
 
 
-class TestChainedValidate:
+class TestChainedPostLoad:
     def test_order(self) -> None:
-        m = ChainedValidate.convert({"x": 5})
+        m = ChainedPostLoad.convert({"x": 5})
         assert m.x == 11  # (5 * 2) + 1
 
 
@@ -406,13 +418,13 @@ class TestFrozen:
         m = FrozenOk(x=1)
         assert m.x == 1
 
-    def test_frozen_with_validate_raises_at_class_creation(self) -> None:
+    def test_frozen_with_post_load_raises_at_class_creation(self) -> None:
         with pytest.raises(TypeError, match="frozen"):
 
             class _FrozenBad(HookStruct, frozen=True):
                 x: int
 
-                @validate("x")
+                @post_load("x")
                 def _val(self, v: int) -> int:
                     return v
 
@@ -422,7 +434,7 @@ class TestFrozen:
 # ---------------------------------------------------------------------------
 
 
-class WithSerializeAndComputed(HookStruct):
+class WithPreUnloadAndComputed(HookStruct):
     name: str
     secret: str = field(exclude=True, default="shh")
 
@@ -430,21 +442,21 @@ class WithSerializeAndComputed(HookStruct):
     def loud(self) -> str:
         return self.name.upper()
 
-    @serialize("name")
+    @pre_unload("name")
     def _title(self, v: str) -> str:
         return v.title()
 
 
 class TestDumpFireHooks:
     def test_default(self) -> None:
-        m = WithSerializeAndComputed(name="alice")
+        m = WithPreUnloadAndComputed(name="alice")
         data = m.dump()
         assert data["name"] == "Alice"  # hook fired
         assert data["loud"] == "ALICE"  # computed always present
         assert "secret" not in data
 
     def test_no_hooks(self) -> None:
-        m = WithSerializeAndComputed(name="alice")
+        m = WithPreUnloadAndComputed(name="alice")
         data = m.dump(fire_hooks=False)
         assert data["name"] == "alice"  # raw value
         assert data["loud"] == "ALICE"  # computed still works
@@ -541,86 +553,87 @@ class TestInheritedComputed:
         assert gc.dump()["loud"] == "EVE"
 
 
-class ParentWithSerialize(HookStruct):
+class ParentWithPreUnload(HookStruct):
     name: str
 
-    @serialize("name")
+    @pre_unload("name")
     def _upper(self, v: str) -> str:
         return v.upper()
 
 
-class ChildOfSerialize(ParentWithSerialize):
+class ChildOfPreUnload(ParentWithPreUnload):
     pass
 
 
-class TestInheritedSerialize:
+class TestInheritedPreUnload:
     def test_child_encode_fires_parent_hook(self) -> None:
-        c = ChildOfSerialize(name="alice")
+        c = ChildOfPreUnload(name="alice")
         assert c.encode() == b'{"name":"ALICE"}'
 
     def test_child_dump_fires_parent_hook(self) -> None:
-        c = ChildOfSerialize(name="alice")
+        c = ChildOfPreUnload(name="alice")
         assert c.dump()["name"] == "ALICE"
 
     def test_child_dump_no_hooks_still_works(self) -> None:
-        c = ChildOfSerialize(name="alice")
+        c = ChildOfPreUnload(name="alice")
         assert c.dump(fire_hooks=False)["name"] == "alice"
 
 
-class ParentWithDeserialize(HookStruct):
+class ParentWithPreLoad(HookStruct):
     name: str
 
-    @deserialize("name")
-    def _clean(self, v: str) -> str:
+    @pre_load("name")
+    @classmethod
+    def _clean(cls, v: str) -> str:
         return v.strip().title()
 
 
-class ChildOfDeserialize(ParentWithDeserialize):
+class ChildOfPreLoad(ParentWithPreLoad):
     pass
 
 
-class TestInheritedDeserialize:
+class TestInheritedPreLoad:
     def test_child_decode_applies_parent_hook(self) -> None:
-        c = ChildOfDeserialize.decode(b'{"name":"  alice  "}')
+        c = ChildOfPreLoad.decode(b'{"name":"  alice  "}')
         assert c.name == "Alice"
 
     def test_child_convert_applies_parent_hook(self) -> None:
-        c = ChildOfDeserialize.convert({"name": "  bob  "})
+        c = ChildOfPreLoad.convert({"name": "  bob  "})
         assert c.name == "Bob"
 
 
-class ParentWithValidate(HookStruct):
+class ParentWithPostLoad(HookStruct):
     score: int
 
-    @validate("score")
+    @post_load("score")
     def _clamp(self, v: int) -> int:
         return max(0, min(v, 100))
 
 
-class ChildOfValidate(ParentWithValidate):
+class ChildOfPostLoad(ParentWithPostLoad):
     pass
 
 
-class TestInheritedValidate:
+class TestInheritedPostLoad:
     def test_child_decode_applies_parent_hook(self) -> None:
-        c = ChildOfValidate.convert({"score": 200})
+        c = ChildOfPostLoad.convert({"score": 200})
         assert c.score == 100
 
     def test_child_convert_applies_parent_hook(self) -> None:
-        c = ChildOfValidate.convert({"score": -10})
+        c = ChildOfPostLoad.convert({"score": -10})
         assert c.score == 0
 
 
 class HookOrderParent(HookStruct):
     x: int = 0
 
-    @validate("x")
+    @post_load("x")
     def _parent_hook(self, v: int) -> int:
         return v * 2
 
 
 class HookOrderChild(HookOrderParent):
-    @validate("x")
+    @post_load("x")
     def _child_hook(self, v: int) -> int:
         return v + 1
 
@@ -686,30 +699,31 @@ class TestEdgeCases:
         f = Field()
         assert isinstance(repr(f), str)
 
-    def test_validate_transform(self) -> None:
-        """Validate hooks can transform values."""
+    def test_post_load_transform(self) -> None:
+        """Post-load hooks can transform values."""
 
         class Transform(HookStruct):
             x: int
 
-            @validate("x")
+            @post_load("x")
             def _clamp(self, v: int) -> int:
                 return max(0, min(v, 100))
 
         m = Transform.convert({"x": 200})
         assert m.x == 100
 
-    def test_deserialize_before_validate(self) -> None:
-        """Deserialize hooks run before validate hooks."""
+    def test_pre_load_before_post_load(self) -> None:
+        """pre_load hooks run before post_load hooks."""
 
         class Order(HookStruct):
             value: str = ""
 
-            @deserialize("value")
-            def _strip(self, v: str) -> str:
+            @pre_load("value")
+            @classmethod
+            def _strip(cls, v: str) -> str:
                 return v.strip()
 
-            @validate("value")
+            @post_load("value")
             def _check_not_empty(self, v: str) -> str:
                 if not v:
                     raise ValueError("empty after strip")
@@ -724,9 +738,9 @@ class TestEdgeCases:
             Order.decode(b'{"value":"   "}')
 
     def test_stage_enum_values(self) -> None:
-        assert Stage.SERIALIZE == "serialize"
-        assert Stage.DESERIALIZE == "deserialize"
-        assert Stage.VALIDATE == "validate"
+        assert Stage.PRE_UNLOAD == "pre_unload"
+        assert Stage.PRE_LOAD == "pre_load"
+        assert Stage.POST_LOAD == "post_load"
 
     def test_extra_metadata_preserved(self) -> None:
         class WithExtra(HookStruct):
@@ -773,7 +787,7 @@ class TestToPositional:
         class M(HookStruct):
             name: str
 
-            @serialize("name")
+            @pre_unload("name")
             def _upper(self, v: str) -> str:
                 return v.upper()
 

@@ -7,10 +7,10 @@ from structhook.model import (
     HookStruct,
     Stage,
     computed_field,
-    deserialize,
     field,
-    serialize,
-    validate,
+    post_load,
+    pre_load,
+    pre_unload,
 )
 
 __all__ = [
@@ -20,8 +20,8 @@ __all__ = [
     "HookStruct",
     "Stage",
     "computed_field",
-    "deserialize",
     "field",
-    "serialize",
-    "validate",
+    "post_load",
+    "pre_load",
+    "pre_unload",
 ]

@@ -5,8 +5,8 @@ that adds:
 
 * **Field metadata** - :func:`field` / :class:`Field` with ``exclude`` and
   ``extra`` options.
-* **Lifecycle hooks** - :func:`serialize`, :func:`deserialize`, and
-  :func:`validate` decorators for per-field transform pipelines.
+* **Lifecycle hooks** - :func:`pre_unload`, :func:`pre_load`, and
+  :func:`post_load` decorators for per-field transform pipelines.
   These fire on **every** encode / decode of the field.
 * **msgspec codec hooks** - :meth:`HookStruct.msgspec_enc_hook` and
   :meth:`HookStruct.msgspec_dec_hook` static methods that fire **only** when
@@ -45,10 +45,10 @@ __all__ = [
     "Field",
     "Stage",
     "computed_field",
-    "deserialize",
     "field",
-    "serialize",
-    "validate",
+    "post_load",
+    "pre_load",
+    "pre_unload",
 ]
 
 # ---------------------------------------------------------------------------
@@ -154,16 +154,16 @@ def field(
 class Stage(StrEnum):
     """Enum for hook pipeline stages."""
 
-    SERIALIZE = "serialize"
-    DESERIALIZE = "deserialize"
-    VALIDATE = "validate"
+    PRE_UNLOAD = "pre_unload"
+    PRE_LOAD = "pre_load"
+    POST_LOAD = "post_load"
 
 
-def serialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
-    """Register a function as a *serialize* hook for the given field(s).
+def pre_unload(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
+    """Register a function as a *pre_unload* hook for the given field(s).
 
     The hook receives ``(model_instance, current_value)`` and must return the
-    serialized value.  Serialize hooks fire **after** computed fields and
+    serialized value.  Pre-unload hooks fire **after** computed fields and
     excluded fields are processed, but **before** JSON encoding.
     """
 
@@ -171,41 +171,63 @@ def serialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
         field_or_fields = [field_or_fields]
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        func.__stage__ = Stage.SERIALIZE
+        func.__stage__ = Stage.PRE_UNLOAD
         func.__fields__ = field_or_fields
         return func
 
     return decorator
 
 
-def deserialize(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
-    """Register a function as a *deserialize* hook for the given field(s).
+def pre_load(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
+    """Register a function as a *pre_load* hook for the given field(s).
 
     The hook receives ``(model_class, raw_value)`` and must return the
     deserialized value.  It runs on the raw decoded dict **before** struct
     conversion, so the value may still be an un-coerced JSON primitive.
+
+    **Must be paired with** :func:`@classmethod <classmethod>` **directly
+    below**::
+
+        @pre_load("name")
+        @classmethod
+        def _clean_name(cls, v: str) -> str:
+            return v.strip().title()
+
+    This ensures type checkers enforce ``cls`` as the first parameter and
+    the decorator validates at runtime that ``@classmethod`` is present.
     """
 
     if isinstance(field_or_fields, str):
         field_or_fields = [field_or_fields]
 
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        func.__stage__ = Stage.DESERIALIZE
-        func.__fields__ = field_or_fields
+    def decorator(func: classmethod[Any, ..., Any]) -> classmethod[Any, ..., Any]:
+        if not isinstance(func, classmethod):
+            raise TypeError(
+                f"pre_load requires @classmethod below it. "
+                f"Got {type(func).__name__!r} instead. "
+                f"Use:\n\n"
+                f"    @pre_load(...)\n"
+                f"    @classmethod\n"
+                f"    def your_hook(cls, value): ..."
+            )
+            
+        func.__func__.__stage__ = Stage.PRE_LOAD
+        func.__func__.__fields__ = field_or_fields
+        
         return func
 
     return decorator
 
 
-def validate(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
-    """Register a function as a *validate* hook for the given field(s).
+def post_load(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
+    """Register a function as a *post_load* hook for the given field(s).
 
-    The hook receives ``(model_class, converted_value)`` and must return the
+    The hook receives ``(model_instance, converted_value)`` and must return the
     (possibly transformed) value.  It runs **after** struct conversion, so the
     value is already coerced to the field's declared type.
 
     .. warning::
-        Validate hooks use ``object.__setattr__`` to mutate the model after
+        Post-load hooks use ``object.__setattr__`` to mutate the model after
         construction and are therefore **incompatible** with ``frozen=True``.
     """
 
@@ -213,7 +235,7 @@ def validate(field_or_fields: str | Sequence[str]) -> Callable[..., Any]:
         field_or_fields = [field_or_fields]
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        func.__stage__ = Stage.VALIDATE
+        func.__stage__ = Stage.POST_LOAD
         func.__fields__ = field_or_fields
         return func
 
@@ -295,9 +317,9 @@ class HookStructMeta(StructMeta):
         computed_fields: list[str] = []
 
         hooks: dict[Stage, dict[str, list[Callable[..., Any]]]] = {
-            Stage.SERIALIZE: {},
-            Stage.DESERIALIZE: {},
-            Stage.VALIDATE: {},
+            Stage.PRE_UNLOAD: {},
+            Stage.PRE_LOAD: {},
+            Stage.POST_LOAD: {},
         }
 
         for key, value in namespace.items():
@@ -309,9 +331,11 @@ class HookStructMeta(StructMeta):
                     name=value.name,
                 )  # type: ignore
 
-            elif callable(value) and hasattr(value, "__stage__") and hasattr(value, "__fields__"):
-                for hook_field in value.__fields__:
-                    hooks[value.__stage__].setdefault(hook_field, []).append(value)
+            elif callable(value) or isinstance(value, classmethod):
+                func = value.__func__ if isinstance(value, classmethod) else value
+                if hasattr(func, "__stage__") and hasattr(func, "__fields__"):
+                    for hook_field in func.__fields__:
+                        hooks[func.__stage__].setdefault(hook_field, []).append(func)
 
             elif isinstance(value, computedproperty) and getattr(
                 value, "__computed_field__", False
@@ -404,25 +428,25 @@ class HookStructMeta(StructMeta):
         cls.__fields__ = all_fields  # type: ignore
         cls.__computed_fields__ = computed_fields_tuple  # type: ignore
         cls.__excluded_fields__ = excluded_fields  # type: ignore
-        cls.__serialize_hooks__ = hooks[Stage.SERIALIZE]  # type: ignore
-        cls.__deserialize_hooks__ = hooks[Stage.DESERIALIZE]  # type: ignore
-        cls.__validate_hooks__ = hooks[Stage.VALIDATE]  # type: ignore
+        cls.__pre_unload_hooks__ = hooks[Stage.PRE_UNLOAD]  # type: ignore
+        cls.__pre_load_hooks__ = hooks[Stage.PRE_LOAD]  # type: ignore
+        cls.__post_load_hooks__ = hooks[Stage.POST_LOAD]  # type: ignore
 
-        # --- guard: frozen + validate hooks ---------------------------------
+        # --- guard: frozen + post_load hooks --------------------------------
 
-        if is_frozen and cls.__validate_hooks__:  # type: ignore
+        if is_frozen and cls.__post_load_hooks__:  # type: ignore
             raise TypeError(
-                f"Cannot create frozen model {name!r} with validate hooks. "
-                f"Validate hooks require post-construction mutation via "
+                f"Cannot create frozen model {name!r} with post_load hooks. "
+                f"Post-load hooks require post-construction mutation via "
                 f"object.__setattr__, which is incompatible with frozen=True."
             )
 
         # --- feature flags --------------------------------------------------
 
         cls.__has_encode_features__ = bool(  # type: ignore
-            computed_fields_tuple or excluded_fields or cls.__serialize_hooks__  # type: ignore
+            computed_fields_tuple or excluded_fields or cls.__pre_unload_hooks__  # type: ignore
         )
-        cls.__has_decode_features__ = bool(cls.__deserialize_hooks__ or cls.__validate_hooks__)  # type: ignore
+        cls.__has_decode_features__ = bool(cls.__pre_load_hooks__ or cls.__post_load_hooks__)  # type: ignore
 
         # Collect type hints across the MRO once (Python __annotations__
         # are not inherited, so we must walk parent classes).
@@ -506,10 +530,10 @@ class HookStructMeta(StructMeta):
             # Struct fields (non-excluded) first, then computed fields.
             _encode_schema: list[tuple[str, tuple[Callable[..., Any], ...]]] = []
             _excluded = cls.__excluded_fields__  # type: ignore
-            _ser_hooks = cls.__serialize_hooks__  # type: ignore
+            _unload_hooks = cls.__pre_unload_hooks__  # type: ignore
             for _fn in cls.__struct_fields__:
                 if _fn not in _excluded:
-                    _encode_schema.append((_fn, tuple(_ser_hooks.get(_fn, ()))))
+                    _encode_schema.append((_fn, tuple(_unload_hooks.get(_fn, ()))))
             for _fn in computed_fields_tuple:
                 _encode_schema.append((_fn, ()))
 
@@ -529,7 +553,7 @@ class HookStructMeta(StructMeta):
                         data[field] = getattr(self, field)
 
                     if fire_hooks:
-                        for field, funcs in _ser_hooks.items():
+                        for field, funcs in _unload_hooks.items():
                             if field in data:
                                 for func in funcs:
                                     data[field] = func(self, data[field])
@@ -559,12 +583,12 @@ class HookStructMeta(StructMeta):
 
         # --- build _shared_convert ------------------------------------------
 
-        _shared_validate_hooks = cls.__validate_hooks__  # type: ignore
+        _shared_post_load_hooks = cls.__post_load_hooks__  # type: ignore
 
         def _shared_convert(model: HookStruct) -> HookStruct:
-            for field, funcs in _shared_validate_hooks.items():
+            for field, funcs in _shared_post_load_hooks.items():
                 for func in funcs:
-                    object.__setattr__(model, field, func(cls, getattr(model, field)))
+                    object.__setattr__(model, field, func(model, getattr(model, field)))
 
             return model
 
@@ -592,15 +616,15 @@ class HookStructMeta(StructMeta):
                     return msgspec.convert(data, cls)  # type: ignore
 
         else:
-            _decode_deserialize_hooks = cls.__deserialize_hooks__  # type: ignore
-            _decode_validate_hooks = cls.__validate_hooks__  # type: ignore
+            _decode_pre_load_hooks = cls.__pre_load_hooks__  # type: ignore
+            _decode_post_load_hooks = cls.__post_load_hooks__  # type: ignore
 
             if _needs_dec_hook:
 
                 def _decode(raw: bytes) -> HookStruct:
                     data: dict[str, Any] = _dict_decoder.decode(raw)
 
-                    for field, funcs in _decode_deserialize_hooks.items():
+                    for field, funcs in _decode_pre_load_hooks.items():
                         if field in data:
                             for func in funcs:
                                 data[field] = func(cls, data[field])
@@ -611,16 +635,16 @@ class HookStructMeta(StructMeta):
                         dec_hook=cls.msgspec_dec_hook,  # type: ignore
                     )
 
-                    for field, funcs in _decode_validate_hooks.items():
+                    for field, funcs in _decode_post_load_hooks.items():
                         for func in funcs:
-                            object.__setattr__(obj, field, func(cls, getattr(obj, field)))
+                            object.__setattr__(obj, field, func(obj, getattr(obj, field)))
 
                     return obj
 
                 def _convert(data: DictLike) -> HookStruct:
                     data_dict = dict(data)
 
-                    for field, funcs in _decode_deserialize_hooks.items():
+                    for field, funcs in _decode_pre_load_hooks.items():
                         if field in data_dict:
                             for func in funcs:
                                 data_dict[field] = func(cls, data_dict[field])
@@ -638,23 +662,23 @@ class HookStructMeta(StructMeta):
                 def _decode(raw: bytes) -> HookStruct:
                     data: dict[str, Any] = _dict_decoder.decode(raw)
 
-                    for field, funcs in _decode_deserialize_hooks.items():
+                    for field, funcs in _decode_pre_load_hooks.items():
                         if field in data:
                             for func in funcs:
                                 data[field] = func(cls, data[field])
 
                     obj = msgspec.convert(data, cls)  # type: ignore
 
-                    for field, funcs in _decode_validate_hooks.items():
+                    for field, funcs in _decode_post_load_hooks.items():
                         for func in funcs:
-                            object.__setattr__(obj, field, func(cls, getattr(obj, field)))
+                            object.__setattr__(obj, field, func(obj, getattr(obj, field)))
 
                     return obj
 
                 def _convert(data: DictLike) -> HookStruct:
                     data_dict = dict(data)
 
-                    for field, funcs in _decode_deserialize_hooks.items():
+                    for field, funcs in _decode_pre_load_hooks.items():
                         if field in data_dict:
                             for func in funcs:
                                 data_dict[field] = func(cls, data_dict[field])
@@ -695,7 +719,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
          - Scope
          - When it fires
          - Override via
-       * - :func:`serialize` / :func:`deserialize` / :func:`validate`
+       * - :func:`pre_unload` / :func:`pre_load` / :func:`post_load`
          - A specific **field**
          - **Every** encode / decode of that field
          - Decorator on a method
@@ -705,9 +729,9 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
          - ``@staticmethod`` override on a subclass
 
     .. warning::
-        ``frozen=True`` is incompatible with :func:`validate` hooks (they
+        ``frozen=True`` is incompatible with :func:`post_load` hooks (they
         require post-construction mutation via ``object.__setattr__``).
-        Creating a frozen model with validate hooks raises ``TypeError`` at
+        Creating a frozen model with post_load hooks raises ``TypeError`` at
         class-definition time.
 
         Likewise, the mapping API (``model["key"] = value``) uses
@@ -718,9 +742,9 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
     __computed_fields__: ClassVar[tuple[str, ...]]
     __excluded_fields__: ClassVar[frozenset[str]]
 
-    __serialize_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
-    __deserialize_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
-    __validate_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
+    __pre_unload_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
+    __pre_load_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
+    __post_load_hooks__: ClassVar[dict[str, list[Callable[..., Any]]]]
 
     __has_encode_features__: ClassVar[bool]
     __has_decode_features__: ClassVar[bool]
@@ -747,7 +771,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
            type msgspec handles natively.
 
            If you want a hook that fires on **every** encode of a specific
-           field, use :func:`serialize` instead.
+           field, use :func:`pre_unload` instead.
 
         The hook receives a single object and must return a JSON-serializable
         value (``dict``, ``list``, ``str``, ``int``, ``float``, ``bool``, or
@@ -794,7 +818,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
            type msgspec handles natively.
 
            If you want a hook that fires on **every** decode of a specific
-           field, use :func:`deserialize` instead.
+           field, use :func:`pre_load` instead.
 
         The hook receives the **target type** and the raw JSON value, and must
         return an instance of the target type.  It is passed as the
@@ -890,7 +914,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
         mode:
             ``"python"`` returns the result of :func:`msgspec.to_builtins`
             (plus computed fields, minus excluded fields, and optionally
-            serialize hooks).  ``"json"`` round-trips through JSON so that
+            pre_unload hooks).  ``"json"`` round-trips through JSON so that
             dates, UUIDs, etc. are rendered as their JSON string forms.
         include:
             If provided, return only the named fields (dropping any that
@@ -899,7 +923,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
             If provided, return all fields except the named ones.  Mutually
             exclusive with *include*.
         fire_hooks:
-            If ``False``, skip serialize hooks.  Excluded and computed fields
+            If ``False``, skip pre_unload hooks.  Excluded and computed fields
             are still processed.  Defaults to ``True``.
 
         Raises
@@ -953,7 +977,7 @@ class HookStruct(Struct, kw_only=True, dict=True, metaclass=HookStructMeta):
             If provided, emit all fields except the named ones.  Mutually
             exclusive with *include*.
         fire_hooks:
-            If ``False``, skip serialize hooks.
+            If ``False``, skip pre_unload hooks.
         computed:
             If ``True``, include computed fields.  Default ``False``
             (they typically do not correspond to database columns).
